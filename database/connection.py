@@ -1,0 +1,1 @@
+"""PostgreSQL connection module placeholder."""
