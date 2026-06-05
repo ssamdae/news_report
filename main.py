@@ -43,10 +43,44 @@ def run(target_date: date) -> None:
     print(f"news_article 저장 완료: {news_count}건")
 
 
+def collect_news(stock_code: str) -> None:
+    import pandas as pd
+
+    from collector.news_collector import collect_news_for_signals
+    from database.news_repository import load_active_stock_keywords, save_news_articles
+    from database.stock_repository import load_stock_master_by_code
+
+    stock_code = stock_code.strip()
+    if not stock_code:
+        raise ValueError("--stock-code must not be empty")
+
+    stock = load_stock_master_by_code(stock_code)
+    if stock is None:
+        print(f"stock_master에서 종목을 찾을 수 없습니다: {stock_code}")
+        return
+
+    print(f"뉴스 단독 수집 시작: {stock['stock_name']} ({stock['stock_code']})")
+    keyword_df = load_active_stock_keywords([stock["stock_code"]])
+    print(f"stock_keyword_map 활성 키워드 조회 완료: {len(keyword_df)}건")
+
+    stock_df = pd.DataFrame(
+        [
+            {
+                "stock_code": stock["stock_code"],
+                "stock_name": stock["stock_name"],
+            }
+        ]
+    )
+    news_df = collect_news_for_signals(stock_df, keyword_df=keyword_df)
+    news_count = save_news_articles(news_df)
+    print(f"news_article 저장 완료: {news_count}건")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stock research system")
     parser.add_argument("command", nargs="?", help="Command to run")
     parser.add_argument("--date", help="Target date in YYYY-MM-DD format")
+    parser.add_argument("--stock-code", help="Stock code for collect-news command")
     args = parser.parse_args()
 
     if args.command == "test-db":
@@ -56,6 +90,12 @@ def main() -> None:
 
     if args.command == "run":
         run(_parse_date(args.date))
+        return
+
+    if args.command == "collect-news":
+        if not args.stock_code:
+            parser.error("collect-news requires --stock-code")
+        collect_news(args.stock_code)
         return
 
     print("Stock research system scaffold")

@@ -19,6 +19,31 @@ def _records_from_dataframe(df: pd.DataFrame, columns: list[str]) -> list[dict]:
     ]
 
 
+def load_stock_master_by_code(stock_code: str) -> dict | None:
+    sql = """
+        SELECT
+            stock_code,
+            stock_name,
+            market
+        FROM stock_master
+        WHERE stock_code = %(stock_code)s
+    """
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, {"stock_code": stock_code})
+            row = cursor.fetchone()
+
+    if row is None:
+        return None
+
+    return {
+        "stock_code": row[0],
+        "stock_name": row[1],
+        "market": row[2],
+    }
+
+
 def save_stock_master(df: pd.DataFrame) -> int:
     if df.empty:
         return 0

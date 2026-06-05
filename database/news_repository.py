@@ -101,11 +101,16 @@ def save_news_articles(df: pd.DataFrame) -> int:
             %(keyword)s
         )
         ON CONFLICT (link) DO NOTHING
+        RETURNING id
     """
 
+    inserted_count = 0
     with get_connection() as connection:
         with connection.cursor() as cursor:
-            cursor.executemany(sql, rows)
+            for row in rows:
+                cursor.execute(sql, row)
+                if cursor.fetchone() is not None:
+                    inserted_count += 1
         connection.commit()
 
-    return len(rows)
+    return inserted_count
