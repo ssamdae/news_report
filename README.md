@@ -1,58 +1,13 @@
 # Stock Research System
 
-Python 기반 한국 주식 리서치 자동화 시스템입니다.
+Oracle Cloud Ubuntu 24.04, Python 3.12 기준 한국 주식 500억봉 후보를 수집하고 저장하는 프로젝트입니다.
 
-Oracle Cloud Ubuntu 24.04 환경에서 한국 주식 시장의 500억봉 조건 탐지 시스템을 개발하기 위한 초기 프로젝트 구조입니다.
+## 실행 환경
 
-## 목적
-
-최종 목표는 한국 주식 중 사용자가 정의한 500억봉 조건을 만족하는 종목을 자동 탐색하고, 이후 뉴스, 공시, AI 분석, PDF 리포트, Streamlit 대시보드까지 확장하는 투자 리서치 플랫폼 구축입니다.
-
-현재 단계에서는 실제 기능을 구현하지 않고, 프로젝트 초기 구조와 설정 파일만 준비합니다.
-
-## 운영 환경
-
-- Oracle Cloud VM
 - OS: Ubuntu 24.04 LTS
 - Python: 3.12
-- Database: PostgreSQL 16
-- Dashboard: Streamlit
-- Version control: Git
-
-## 현재 생성 범위
-
-- 폴더 구조
-- `requirements.txt`
-- `.env.example`
-- `README.md`
-- `database/schema.sql`
-
-## 아직 구현하지 않는 항목
-
-- 실제 주가 데이터 수집
-- 500억봉 탐지 로직
-- DB 저장 로직
-- Streamlit 화면
-- 뉴스 수집
-- DART 공시 수집
-- AI 분석
-- PDF 리포트 생성
-- Docker 구성
-
-## 폴더 구조
-
-```text
-stock-research-system/
-├── collector/
-├── dashboard/
-├── database/
-├── filter/
-├── .env.example
-├── README.md
-├── main.py
-├── requirements.txt
-└── database/schema.sql
-```
+- Database: PostgreSQL
+- Data source: Naver Finance daily price page
 
 ## 초기 설정
 
@@ -63,17 +18,66 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-## 데이터베이스 스키마
+## 종목 마스터 준비
 
-초기 스키마는 `database/schema.sql`에 있습니다.
+기본 수집기는 `data/stock_master.csv` 파일을 읽습니다.
 
-포함 테이블:
+CSV 형식:
 
-- `stock_master`
-- `daily_price`
-- `signal_event`
-- `job_run`
+```csv
+stock_code,stock_name,market
+005930,삼성전자,KOSPI
+086520,에코프로,KOSDAQ
+```
 
-## Docker
+현재 저장소에는 실행 확인용 예시 `data/stock_master.csv`가 포함되어 있습니다. 실제 운영 전에는 KOSPI/KOSDAQ 전체 종목으로 교체하세요.
 
-이 프로젝트 초기 구조에서는 Docker를 사용하지 않습니다.
+다른 경로의 CSV를 쓰려면 환경변수를 지정할 수 있습니다.
+
+```bash
+export STOCK_MASTER_CSV=/path/to/stock_master.csv
+```
+
+## 주가 수집 실행
+
+```bash
+python3.12 main.py run --date 2026-06-04
+```
+
+수집 흐름:
+
+1. 종목 마스터 로드
+2. 네이버 금융에서 종목별 일봉 수집
+3. 전일 종가 계산
+4. 500억봉 필터 적용
+5. `stock_master`, `daily_price`, `signal_event` 저장
+
+네이버 요청 차단을 줄이기 위해 종목별 요청 사이에 기본 0.2초 대기합니다. 환경변수를 지정해도 수집기는 0.1~0.3초 범위로 제한합니다.
+
+```bash
+export NAVER_REQUEST_SLEEP_SECONDS=0.3
+```
+
+## 수집 컬럼
+
+수집기는 기존 필터와 DB 저장 로직을 유지하기 위해 다음 컬럼을 반환합니다.
+
+- `trade_date`
+- `market`
+- `stock_code`
+- `stock_name`
+- `open_price`
+- `high_price`
+- `low_price`
+- `close_price`
+- `prev_close_price`
+- `volume`
+- `trading_value`
+
+네이버 일봉 페이지는 거래대금을 직접 제공하지 않으므로 `trading_value`는 `close_price * volume`으로 산출합니다.
+
+## DB 테스트
+
+```bash
+python3.12 main.py test-db
+```
