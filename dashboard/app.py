@@ -46,6 +46,22 @@ def load_signal_events(signal_date: date) -> pd.DataFrame:
     return read_sql(query, {"signal_date": signal_date, "signal_name": SIGNAL_NAME})
 
 
+def load_news_by_date(news_date: date) -> pd.DataFrame:
+    query = """
+        SELECT
+            stock_name,
+            title,
+            source,
+            keyword,
+            published_at,
+            link
+        FROM news_article
+        WHERE created_at::date = %(news_date)s
+        ORDER BY published_at DESC NULLS LAST, created_at DESC
+    """
+    return read_sql(query, {"news_date": news_date})
+
+
 def search_stocks(keyword: str) -> pd.DataFrame:
     query = """
         SELECT
@@ -90,6 +106,47 @@ def load_stock_detail(stock_code: str) -> pd.DataFrame:
     return read_sql(query, {"stock_code": stock_code, "signal_name": SIGNAL_NAME})
 
 
+def load_news_by_stock(stock_code: str) -> pd.DataFrame:
+    query = """
+        SELECT
+            stock_name,
+            title,
+            source,
+            keyword,
+            published_at,
+            link
+        FROM news_article
+        WHERE stock_code = %(stock_code)s
+        ORDER BY published_at DESC NULLS LAST, created_at DESC
+    """
+    return read_sql(query, {"stock_code": stock_code})
+
+
+def display_news_table(news: pd.DataFrame) -> None:
+    if news.empty:
+        st.info("저장된 뉴스가 없습니다.")
+        return
+
+    display_news = news.rename(
+        columns={
+            "stock_name": "종목명",
+            "title": "제목",
+            "source": "source",
+            "keyword": "keyword",
+            "published_at": "published_at",
+            "link": "link",
+        }
+    )
+    st.dataframe(
+        display_news,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "link": st.column_config.LinkColumn("link"),
+        },
+    )
+
+
 st.title("500억봉 대시보드")
 
 selected_date = st.date_input("날짜 선택", value=date.today())
@@ -127,6 +184,15 @@ else:
         }
     )
     st.dataframe(display_signals, use_container_width=True, hide_index=True)
+
+st.subheader("해당 날짜 저장 뉴스")
+
+try:
+    date_news = load_news_by_date(selected_date)
+except Exception as error:
+    st.warning(f"뉴스 조회 중 오류가 발생했습니다: {error}")
+else:
+    display_news_table(date_news)
 
 st.divider()
 st.subheader("종목명 검색")
@@ -190,3 +256,11 @@ else:
             }
         )
         st.dataframe(display_detail, use_container_width=True, hide_index=True)
+
+        st.subheader("선택 종목 뉴스")
+        try:
+            stock_news = load_news_by_stock(selected_stock_code)
+        except Exception as error:
+            st.warning(f"뉴스 조회 중 오류가 발생했습니다: {error}")
+        else:
+            display_news_table(stock_news)
