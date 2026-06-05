@@ -51,6 +51,18 @@ CREATE TABLE IF NOT EXISTS job_run (
     error_message TEXT
 );
 
+CREATE TABLE IF NOT EXISTS news_article (
+    id SERIAL PRIMARY KEY,
+    stock_code VARCHAR(20),
+    stock_name VARCHAR(100),
+    title TEXT,
+    link TEXT UNIQUE,
+    published_at TIMESTAMP,
+    source VARCHAR(100),
+    keyword TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_daily_price_trade_date
     ON daily_price (trade_date);
 
@@ -62,3 +74,9 @@ CREATE INDEX IF NOT EXISTS idx_signal_event_stock_code
 
 CREATE INDEX IF NOT EXISTS idx_job_run_started_at
     ON job_run (started_at);
+
+CREATE INDEX IF NOT EXISTS idx_news_article_stock_code
+    ON news_article (stock_code);
+
+CREATE INDEX IF NOT EXISTS idx_news_article_created_at
+    ON news_article (created_at);

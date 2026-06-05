@@ -18,6 +18,13 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
+`.env`에 네이버 검색 API 인증 정보를 설정하세요.
+
+```bash
+NAVER_CLIENT_ID=your_naver_client_id
+NAVER_CLIENT_SECRET=your_naver_client_secret
+```
+
 ## 종목 마스터 준비
 
 기본 수집기는 `data/stock_master.csv` 파일을 읽습니다.
@@ -51,6 +58,8 @@ python3.12 main.py run --date 2026-06-04
 3. 전일 종가 계산
 4. 500억봉 필터 적용
 5. `stock_master`, `daily_price`, `signal_event` 저장
+6. 500억봉 종목 기준 네이버 뉴스 검색 API 수집
+7. `news_article` 저장
 
 네이버 요청 차단을 줄이기 위해 종목별 요청 사이에 기본 0.2초 대기합니다. 환경변수를 지정해도 수집기는 0.1~0.3초 범위로 제한합니다.
 
