@@ -128,6 +128,7 @@ def search_news_by_keyword(
 
 def collect_news_for_signals(
     signal_df: pd.DataFrame,
+    keyword_df: pd.DataFrame | None = None,
     display: int = DEFAULT_DISPLAY,
     sleep_seconds: float = DEFAULT_SLEEP_SECONDS,
 ) -> pd.DataFrame:
@@ -136,27 +137,76 @@ def collect_news_for_signals(
 
     frames: list[pd.DataFrame] = []
     signal_rows = signal_df.drop_duplicates(subset=["stock_code"]).to_dict("records")
+    keywords_by_stock = _build_keywords_by_stock(keyword_df)
 
     for row in signal_rows:
         stock_code = str(row.get("stock_code", "")).strip()
         stock_name = str(row.get("stock_name", "")).strip()
-        keyword = stock_name or stock_code
+        keywords = _build_search_keywords(
+            stock_code=stock_code,
+            stock_name=stock_name,
+            mapped_keywords=keywords_by_stock.get(stock_code, []),
+        )
 
-        try:
-            frame = search_news_by_keyword(
-                keyword=keyword,
-                stock_code=stock_code,
-                stock_name=stock_name,
-                display=display,
-            )
-            if not frame.empty:
-                frames.append(frame)
-        except RuntimeError as exc:
-            print(f"[WARN] News collection skipped for {stock_code} {stock_name}: {exc}")
+        for keyword in keywords:
+            try:
+                frame = search_news_by_keyword(
+                    keyword=keyword,
+                    stock_code=stock_code,
+                    stock_name=stock_name,
+                    display=display,
+                )
+                if not frame.empty:
+                    frames.append(frame)
+            except RuntimeError as exc:
+                print(
+                    f"[WARN] News collection skipped for "
+                    f"{stock_code} {stock_name} keyword={keyword}: {exc}"
+                )
 
-        time.sleep(sleep_seconds)
+            time.sleep(sleep_seconds)
 
     if not frames:
         return pd.DataFrame(columns=OUTPUT_COLUMNS)
 
     return pd.concat(frames, ignore_index=True)
+
+
+def _build_keywords_by_stock(keyword_df: pd.DataFrame | None) -> dict[str, list[str]]:
+    if keyword_df is None or keyword_df.empty:
+        return {}
+
+    missing_columns = {"stock_code", "keyword"} - set(keyword_df.columns)
+    if missing_columns:
+        raise ValueError(
+            "Missing required keyword columns: " + ", ".join(sorted(missing_columns))
+        )
+
+    keywords_by_stock: dict[str, list[str]] = {}
+    for row in keyword_df[["stock_code", "keyword"]].to_dict("records"):
+        stock_code = str(row.get("stock_code", "")).strip()
+        keyword = str(row.get("keyword", "")).strip()
+        if not stock_code or not keyword:
+            continue
+        keywords_by_stock.setdefault(stock_code, []).append(keyword)
+
+    return keywords_by_stock
+
+
+def _build_search_keywords(
+    stock_code: str,
+    stock_name: str,
+    mapped_keywords: list[str],
+) -> list[str]:
+    keywords = [stock_name or stock_code, *mapped_keywords]
+    unique_keywords: list[str] = []
+    seen: set[str] = set()
+
+    for keyword in keywords:
+        normalized = keyword.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_keywords.append(normalized)
+
+    return unique_keywords

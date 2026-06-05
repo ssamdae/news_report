@@ -13,7 +13,7 @@ def _parse_date(value: str | None) -> date:
 def run(target_date: date) -> None:
     from collector.news_collector import collect_news_for_signals
     from collector.stock_collector import collect_daily_stocks
-    from database.news_repository import save_news_articles
+    from database.news_repository import load_active_stock_keywords, save_news_articles
     from database.signal_event_repository import save_signal_events
     from database.stock_repository import save_daily_prices, save_stock_master
     from filter.signal_filter import filter_500eok_signal
@@ -34,7 +34,11 @@ def run(target_date: date) -> None:
     print(f"signal_event 저장 완료: {signal_count}건")
 
     print("뉴스 수집 시작")
-    news_df = collect_news_for_signals(signal_df)
+    signal_stock_codes = signal_df["stock_code"].dropna().astype(str).tolist()
+    keyword_df = load_active_stock_keywords(signal_stock_codes)
+    print(f"stock_keyword_map 활성 키워드 조회 완료: {len(keyword_df)}건")
+
+    news_df = collect_news_for_signals(signal_df, keyword_df=keyword_df)
     news_count = save_news_articles(news_df)
     print(f"news_article 저장 완료: {news_count}건")
 

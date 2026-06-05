@@ -9,6 +9,16 @@ CREATE TABLE IF NOT EXISTS stock_master (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS stock_keyword_map (
+    id BIGSERIAL PRIMARY KEY,
+    stock_code VARCHAR(20) NOT NULL REFERENCES stock_master(stock_code),
+    keyword TEXT NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (stock_code, keyword)
+);
+
 CREATE TABLE IF NOT EXISTS daily_price (
     stock_code VARCHAR(20) NOT NULL REFERENCES stock_master(stock_code),
     trade_date DATE NOT NULL,
@@ -80,3 +90,9 @@ CREATE INDEX IF NOT EXISTS idx_news_article_stock_code
 
 CREATE INDEX IF NOT EXISTS idx_news_article_created_at
     ON news_article (created_at);
+
+CREATE INDEX IF NOT EXISTS idx_stock_keyword_map_stock_code
+    ON stock_keyword_map (stock_code);
+
+CREATE INDEX IF NOT EXISTS idx_stock_keyword_map_active
+    ON stock_keyword_map (is_active);

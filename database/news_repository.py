@@ -15,6 +15,11 @@ NEWS_COLUMNS = [
     "keyword",
 ]
 
+KEYWORD_COLUMNS = [
+    "stock_code",
+    "keyword",
+]
+
 
 def _clean_value(value: Any) -> Any:
     if pd.isna(value):
@@ -36,6 +41,36 @@ def _records_from_dataframe(df: pd.DataFrame) -> list[dict[str, Any]]:
         {key: _clean_value(value) for key, value in record.items()}
         for record in records
     ]
+
+
+def load_active_stock_keywords(stock_codes: list[str]) -> pd.DataFrame:
+    stock_codes = sorted(
+        {str(stock_code).strip() for stock_code in stock_codes if stock_code}
+    )
+    if not stock_codes:
+        return pd.DataFrame(columns=KEYWORD_COLUMNS)
+
+    sql = """
+        SELECT
+            stock_code,
+            keyword
+        FROM stock_keyword_map
+        WHERE is_active = TRUE
+            AND stock_code = ANY(%(stock_codes)s)
+        ORDER BY stock_code, keyword
+    """
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT to_regclass('public.stock_keyword_map')")
+            if cursor.fetchone()[0] is None:
+                return pd.DataFrame(columns=KEYWORD_COLUMNS)
+
+        return pd.read_sql_query(
+            sql,
+            connection,
+            params={"stock_codes": stock_codes},
+        )
 
 
 def save_news_articles(df: pd.DataFrame) -> int:
