@@ -76,11 +76,41 @@ def collect_news(stock_code: str) -> None:
     print(f"news_article 저장 완료: {news_count}건")
 
 
+def ingest_pdf(pdf_dir: str, limit: int | None = None) -> None:
+    from collector.pdf_ingestor import find_pdf_files, parse_signal_evening_pdfs
+    from database.pdf_repository import save_pdf_signal_items
+
+    pdf_files = find_pdf_files(pdf_dir, limit=limit)
+    if not pdf_files:
+        print(f"PDF 파일을 찾을 수 없습니다: {pdf_dir}")
+        return
+
+    print(f"PDF ingest 시작: {len(pdf_files)}개")
+    for pdf_file in pdf_files:
+        print(f"- {pdf_file.name}")
+
+    signal_df = parse_signal_evening_pdfs(pdf_dir=pdf_dir, limit=limit)
+    print(f"PDF 파싱 완료: {len(signal_df)}건")
+
+    saved_count = save_pdf_signal_items(signal_df)
+    print(f"pdf_signal_item 저장 완료: {saved_count}건")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stock research system")
     parser.add_argument("command", nargs="?", help="Command to run")
     parser.add_argument("--date", help="Target date in YYYY-MM-DD format")
     parser.add_argument("--stock-code", help="Stock code for collect-news command")
+    parser.add_argument(
+        "--pdf-dir",
+        default="data/pdfs",
+        help="PDF directory for ingest-pdf command",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        help="Maximum number of PDFs to ingest",
+    )
     args = parser.parse_args()
 
     if args.command == "test-db":
@@ -96,6 +126,10 @@ def main() -> None:
         if not args.stock_code:
             parser.error("collect-news requires --stock-code")
         collect_news(args.stock_code)
+        return
+
+    if args.command == "ingest-pdf":
+        ingest_pdf(args.pdf_dir, limit=args.limit)
         return
 
     print("Stock research system scaffold")

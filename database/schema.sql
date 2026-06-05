@@ -73,6 +73,25 @@ CREATE TABLE IF NOT EXISTS news_article (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS pdf_signal_item (
+    id BIGSERIAL PRIMARY KEY,
+    report_date DATE,
+    theme_name TEXT NOT NULL,
+    stock_name TEXT NOT NULL,
+    change_rate NUMERIC(10, 2),
+    trading_value NUMERIC(20, 2),
+    pdf_file_name TEXT NOT NULL,
+    raw_line TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (
+        pdf_file_name,
+        theme_name,
+        stock_name,
+        change_rate,
+        trading_value
+    )
+);
+
 CREATE INDEX IF NOT EXISTS idx_daily_price_trade_date
     ON daily_price (trade_date);
 
@@ -96,3 +115,9 @@ CREATE INDEX IF NOT EXISTS idx_stock_keyword_map_stock_code
 
 CREATE INDEX IF NOT EXISTS idx_stock_keyword_map_active
     ON stock_keyword_map (is_active);
+
+CREATE INDEX IF NOT EXISTS idx_pdf_signal_item_report_date
+    ON pdf_signal_item (report_date);
+
+CREATE INDEX IF NOT EXISTS idx_pdf_signal_item_stock_name
+    ON pdf_signal_item (stock_name);
