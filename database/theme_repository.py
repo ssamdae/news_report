@@ -247,6 +247,11 @@ STOP_TERMS = (
     "하락",
     "급등",
     "급락",
+    "개별주",
+    "테마주",
+    "관련주",
+    "수혜주",
+    "대장주",
 )
 
 
@@ -1092,6 +1097,13 @@ def upsert_stock_search_terms() -> int:
     return upserted_count
 
 
+def clear_stock_search_terms() -> None:
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("DELETE FROM stock_search_term")
+        connection.commit()
+
+
 def _load_search_term_summary() -> dict:
     summary_sql = """
         SELECT
@@ -1143,6 +1155,7 @@ def _load_search_term_summary() -> dict:
 
 def run_build_search_terms() -> dict:
     ensure_stock_search_term_table()
+    clear_stock_search_terms()
     upserted_count = upsert_stock_search_terms()
     summary = _load_search_term_summary()
     summary["upserted_count"] = upserted_count
