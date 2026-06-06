@@ -435,7 +435,21 @@ def seed_theme_aliases() -> dict[str, int]:
 
 
 def seed_stock_keywords() -> dict[str, int | list[str]]:
-    upsert_sql = """
+    load_stock_sql = """
+        SELECT
+            stock_code,
+            stock_name
+        FROM stock_master
+        WHERE stock_name = %(stock_name)s
+        LIMIT 1
+    """
+    stock_profile_exists_sql = """
+        SELECT 1
+        FROM stock_profile
+        WHERE stock_name = %(stock_name)s
+        LIMIT 1
+    """
+    upsert_with_code_sql = """
         INSERT INTO stock_keyword_map (
             stock_code,
             stock_name,
@@ -445,17 +459,40 @@ def seed_stock_keywords() -> dict[str, int | list[str]]:
             is_active
         )
         SELECT
-            stock_code,
-            stock_name,
+            %(stock_code)s,
+            %(stock_name)s,
             %(keyword)s,
             'seed',
             1.0,
             TRUE
-        FROM stock_master
-        WHERE stock_name = %(stock_name)s
         ON CONFLICT (stock_code, keyword)
         DO UPDATE SET
             stock_name = EXCLUDED.stock_name,
+            keyword_type = EXCLUDED.keyword_type,
+            weight = EXCLUDED.weight,
+            is_active = TRUE
+        RETURNING id
+    """
+    upsert_without_code_sql = """
+        INSERT INTO stock_keyword_map (
+            stock_code,
+            stock_name,
+            keyword,
+            keyword_type,
+            weight,
+            is_active
+        )
+        VALUES (
+            NULL,
+            %(stock_name)s,
+            %(keyword)s,
+            'seed',
+            1.0,
+            TRUE
+        )
+        ON CONFLICT (stock_name, keyword)
+        WHERE stock_code IS NULL
+        DO UPDATE SET
             keyword_type = EXCLUDED.keyword_type,
             weight = EXCLUDED.weight,
             is_active = TRUE
@@ -468,21 +505,37 @@ def seed_stock_keywords() -> dict[str, int | list[str]]:
     with get_connection() as connection:
         with connection.cursor() as cursor:
             for stock_name, keywords in STOCK_KEYWORD_SEED.items():
-                stock_seeded_count = 0
+                cursor.execute(load_stock_sql, {"stock_name": stock_name})
+                stock_row = cursor.fetchone()
+
+                if stock_row is None:
+                    cursor.execute(stock_profile_exists_sql, {"stock_name": stock_name})
+                    if cursor.fetchone() is None:
+                        missing_stocks.append(stock_name)
+                        continue
+
+                    stock_code = None
+                    resolved_stock_name = stock_name
+                else:
+                    stock_code = stock_row[0]
+                    resolved_stock_name = stock_row[1]
+
                 for keyword in keywords:
+                    sql = (
+                        upsert_with_code_sql
+                        if stock_code is not None
+                        else upsert_without_code_sql
+                    )
                     cursor.execute(
-                        upsert_sql,
+                        sql,
                         {
-                            "stock_name": stock_name,
+                            "stock_code": stock_code,
+                            "stock_name": resolved_stock_name,
                             "keyword": keyword,
                         },
                     )
                     if cursor.fetchone() is not None:
                         seeded_count += 1
-                        stock_seeded_count += 1
-
-                if stock_seeded_count == 0:
-                    missing_stocks.append(stock_name)
 
         connection.commit()
 

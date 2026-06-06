@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS stock_master (
 
 CREATE TABLE IF NOT EXISTS stock_keyword_map (
     id BIGSERIAL PRIMARY KEY,
-    stock_code VARCHAR(20) NOT NULL REFERENCES stock_master(stock_code),
+    stock_code VARCHAR(20) REFERENCES stock_master(stock_code),
     stock_name TEXT,
     keyword TEXT NOT NULL,
     keyword_type TEXT,
@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS stock_keyword_map (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (stock_code, keyword)
 );
+
+ALTER TABLE stock_keyword_map
+    ALTER COLUMN stock_code DROP NOT NULL;
 
 ALTER TABLE stock_keyword_map
     ADD COLUMN IF NOT EXISTS stock_name TEXT;
@@ -238,6 +241,10 @@ CREATE INDEX IF NOT EXISTS idx_stock_keyword_map_stock_code
 
 CREATE INDEX IF NOT EXISTS idx_stock_keyword_map_active
     ON stock_keyword_map (is_active);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_keyword_map_stock_name_keyword
+    ON stock_keyword_map (stock_name, keyword)
+    WHERE stock_code IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_pdf_signal_item_report_date
     ON pdf_signal_item (report_date);
