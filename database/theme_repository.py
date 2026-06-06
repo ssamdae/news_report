@@ -440,20 +440,25 @@ def seed_stock_keywords() -> dict[str, int | list[str]]:
             stock_code,
             stock_name,
             keyword,
+            keyword_type,
+            weight,
             is_active
         )
         SELECT
             stock_code,
             stock_name,
             %(keyword)s,
+            'seed',
+            1.0,
             TRUE
         FROM stock_master
         WHERE stock_name = %(stock_name)s
         ON CONFLICT (stock_code, keyword)
         DO UPDATE SET
             stock_name = EXCLUDED.stock_name,
-            is_active = TRUE,
-            updated_at = NOW()
+            keyword_type = EXCLUDED.keyword_type,
+            weight = EXCLUDED.weight,
+            is_active = TRUE
         RETURNING id
     """
 
