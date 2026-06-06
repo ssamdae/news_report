@@ -180,6 +180,65 @@ THEME_ALIAS_SEED = [
 ]
 
 
+STOCK_KEYWORD_SEED = {
+    "한미반도체": [
+        "HBM",
+        "AI반도체",
+        "SK하이닉스",
+        "엔비디아",
+        "반도체 장비",
+    ],
+    "SK하이닉스": [
+        "HBM",
+        "AI반도체",
+        "엔비디아",
+        "메모리반도체",
+        "D램",
+    ],
+    "삼성전자": [
+        "HBM",
+        "AI반도체",
+        "엔비디아",
+        "반도체",
+        "메모리반도체",
+    ],
+    "LS ELECTRIC": [
+        "전력설비",
+        "전력기기",
+        "변압기",
+        "데이터센터",
+        "AI전력",
+    ],
+    "두산에너빌리티": [
+        "원전",
+        "SMR",
+        "전력",
+        "가스터빈",
+        "에너지",
+    ],
+    "로보티즈": [
+        "로봇",
+        "휴머노이드",
+        "자율주행로봇",
+        "AI로봇",
+    ],
+    "현대차": [
+        "로봇",
+        "전기차",
+        "자율주행",
+        "수소차",
+        "미래차",
+    ],
+    "알테오젠": [
+        "바이오",
+        "ADC",
+        "항체의약품",
+        "기술수출",
+        "제약바이오",
+    ],
+}
+
+
 def build_stock_theme_map() -> dict[str, int]:
     insert_themes_sql = """
         INSERT INTO theme_master (theme_name)
@@ -372,6 +431,60 @@ def seed_theme_aliases() -> dict[str, int]:
         "canonical_theme_count": len(canonical_names),
         "alias_count": alias_count,
         "missing_canonical_theme_count": len(missing_canonical_names),
+    }
+
+
+def seed_stock_keywords() -> dict[str, int | list[str]]:
+    upsert_sql = """
+        INSERT INTO stock_keyword_map (
+            stock_code,
+            stock_name,
+            keyword,
+            is_active
+        )
+        SELECT
+            stock_code,
+            stock_name,
+            %(keyword)s,
+            TRUE
+        FROM stock_master
+        WHERE stock_name = %(stock_name)s
+        ON CONFLICT (stock_code, keyword)
+        DO UPDATE SET
+            stock_name = EXCLUDED.stock_name,
+            is_active = TRUE,
+            updated_at = NOW()
+        RETURNING id
+    """
+
+    seeded_count = 0
+    missing_stocks: list[str] = []
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            for stock_name, keywords in STOCK_KEYWORD_SEED.items():
+                stock_seeded_count = 0
+                for keyword in keywords:
+                    cursor.execute(
+                        upsert_sql,
+                        {
+                            "stock_name": stock_name,
+                            "keyword": keyword,
+                        },
+                    )
+                    if cursor.fetchone() is not None:
+                        seeded_count += 1
+                        stock_seeded_count += 1
+
+                if stock_seeded_count == 0:
+                    missing_stocks.append(stock_name)
+
+        connection.commit()
+
+    return {
+        "seeded_count": seeded_count,
+        "stock_count": len(STOCK_KEYWORD_SEED),
+        "missing_stocks": missing_stocks,
     }
 
 

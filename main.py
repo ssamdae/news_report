@@ -257,6 +257,16 @@ def build_stock_knowledge() -> None:
     )
 
 
+def seed_stock_keywords() -> None:
+    from database.theme_repository import seed_stock_keywords as seed_keywords
+
+    result = seed_keywords()
+    print(f"stock_keyword_map seed 완료: {result['seeded_count']}건")
+    print(f"seed 대상 종목 수: {result['stock_count']}건")
+    if result["missing_stocks"]:
+        print("stock_master 미등록 종목: " + ", ".join(result["missing_stocks"]))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stock research system")
     parser.add_argument("command", nargs="?", help="Command to run")
@@ -325,6 +335,10 @@ def main() -> None:
 
     if args.command == "build-stock-knowledge":
         build_stock_knowledge()
+        return
+
+    if args.command == "seed-stock-keywords":
+        seed_stock_keywords()
         return
 
     print("Stock research system scaffold")

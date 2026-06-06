@@ -12,12 +12,16 @@ CREATE TABLE IF NOT EXISTS stock_master (
 CREATE TABLE IF NOT EXISTS stock_keyword_map (
     id BIGSERIAL PRIMARY KEY,
     stock_code VARCHAR(20) NOT NULL REFERENCES stock_master(stock_code),
+    stock_name TEXT,
     keyword TEXT NOT NULL,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (stock_code, keyword)
 );
+
+ALTER TABLE stock_keyword_map
+    ADD COLUMN IF NOT EXISTS stock_name TEXT;
 
 CREATE TABLE IF NOT EXISTS daily_price (
     stock_code VARCHAR(20) NOT NULL REFERENCES stock_master(stock_code),
