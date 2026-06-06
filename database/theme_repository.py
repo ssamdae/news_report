@@ -812,18 +812,20 @@ def build_stock_knowledge_graph() -> dict[str, int]:
     upsert_keyword_sql = """
         WITH raw_nodes AS (
             SELECT
-                TRIM(m.stock_name) AS stock_name,
+                TRIM(COALESCE(p.stock_name, m.stock_name, k.stock_name)) AS stock_name,
                 'KEYWORD' AS node_type,
                 TRIM(k.keyword) AS node_value,
                 'STOCK_KEYWORD' AS relation_type,
                 'stock_keyword_map' AS source,
                 80::numeric(10, 2) AS score
             FROM stock_keyword_map k
-            JOIN stock_master m
+            LEFT JOIN stock_master m
                 ON m.stock_code = k.stock_code
+            LEFT JOIN stock_profile p
+                ON p.stock_name = k.stock_name
             WHERE k.is_active = TRUE
                 AND TRIM(k.keyword) <> ''
-                AND TRIM(m.stock_name) <> ''
+                AND TRIM(COALESCE(p.stock_name, m.stock_name, k.stock_name)) <> ''
         ),
         dedup_nodes AS (
             SELECT
