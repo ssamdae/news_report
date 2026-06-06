@@ -27,6 +27,11 @@ STOCK_ITEM_PATTERN = re.compile(
     r"\((?P<change_rate>[+-]?\d+(?:\.\d+)?)\s*%\)\s*"
     r"\((?P<trading_value>[\d,]+(?:\.\d+)?)\)"
 )
+LEGACY_STOCK_ITEM_PATTERN = re.compile(
+    r"([가-힣A-Za-z0-9&.\-·\s]+?)\s*"
+    r"\(([+-]?\d+(?:\.\d+)?)%\)\s*"
+    r"\(([\d,]+)\s*[Kk]?\)"
+)
 THEME_MARKERS = ("테마", "Theme", "THEME")
 HEADER_WORDS = ("종목", "등락률", "거래대금", "전일대비")
 FORMAT_TYPES = ("recent_angle", "legacy_hash", "bracket_theme", "unknown")
@@ -66,7 +71,7 @@ def detect_format_type(text: str) -> str:
     lines = _iter_logical_lines(text)
     if any(re.match(r"^<\s*.+?\s*>$", line) for line in lines):
         return "recent_angle"
-    if any(re.match(r"^■\s*#\s*.+", line) for line in lines):
+    if any(re.match(r"^\s*■\s*#\s*(.+)$", line) for line in lines):
         return "legacy_hash"
     if any(re.match(r"^\[\s*[^\]]+?\s*\]$", line) for line in lines):
         return "bracket_theme"
@@ -147,7 +152,7 @@ def _parse_with_theme_format(
             current_theme = theme_name
             continue
 
-        items = _parse_item_line(line, current_theme)
+        items = _parse_item_line(line, current_theme, format_type)
         if items is None:
             continue
 
@@ -220,17 +225,17 @@ def _extract_theme_name(line: str, format_type: str) -> str | None:
     if format_type == "recent_angle":
         angle_match = re.match(r"^<\s*(.+?)\s*>$", line)
         if angle_match:
-            return angle_match.group(1).strip()
+            return _normalize_theme_name(angle_match.group(1))
 
     if format_type == "legacy_hash":
-        hash_match = re.match(r"^■\s*#\s*(.+?)\s*$", line)
+        hash_match = re.match(r"^\s*■\s*#\s*(.+)$", line)
         if hash_match:
-            return hash_match.group(1).strip()
+            return _normalize_theme_name(hash_match.group(1))
 
     if format_type == "bracket_theme":
         bracket_match = re.match(r"^\[\s*(.+?)\s*\]$", line)
         if bracket_match:
-            return bracket_match.group(1).strip()
+            return _normalize_theme_name(bracket_match.group(1))
 
     if not any(marker in line for marker in THEME_MARKERS):
         return None
@@ -238,10 +243,17 @@ def _extract_theme_name(line: str, format_type: str) -> str | None:
     cleaned = re.sub(r"^[\-\*\d.\s]+", "", line)
     cleaned = re.sub(r"^(테마명|테마)\s*[:：-]?\s*", "", cleaned)
     cleaned = re.sub(r"\s*(테마)$", "", cleaned)
-    return cleaned.strip() or None
+    return _normalize_theme_name(cleaned)
 
 
-def _parse_item_line(line: str, current_theme: str) -> list[dict[str, Any]] | None:
+def _parse_item_line(
+    line: str,
+    current_theme: str,
+    format_type: str,
+) -> list[dict[str, Any]] | None:
+    if format_type == "legacy_hash":
+        return _parse_legacy_item_line(line, current_theme)
+
     items: list[dict[str, Any]] = []
     for match in STOCK_ITEM_PATTERN.finditer(line):
         stock_name = _clean_stock_name(match.group("stock_name"))
@@ -265,7 +277,39 @@ def _parse_item_line(line: str, current_theme: str) -> list[dict[str, Any]] | No
     return None
 
 
+def _parse_legacy_item_line(
+    line: str,
+    current_theme: str,
+) -> list[dict[str, Any]] | None:
+    if "●" in line:
+        line = line.split("●", 1)[1]
+
+    items: list[dict[str, Any]] = []
+    for match in LEGACY_STOCK_ITEM_PATTERN.finditer(line):
+        stock_name = _clean_stock_name(match.group(1))
+        if not stock_name:
+            continue
+
+        items.append(
+            {
+                "theme_name": current_theme,
+                "stock_name": stock_name,
+                "change_rate": Decimal(match.group(2)),
+                "trading_value": Decimal(match.group(3).replace(",", "")),
+            }
+        )
+
+    if items:
+        return items
+    return None
+
+
 def _clean_stock_name(value: str) -> str | None:
     cleaned = re.sub(r"^[●\-\*\d.)\s]+", "", value).strip(" |/\t")
     cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned or None
+
+
+def _normalize_theme_name(value: str) -> str | None:
+    cleaned = re.sub(r"\s+", " ", value).strip()
     return cleaned or None
