@@ -80,12 +80,28 @@ CREATE TABLE IF NOT EXISTS news_article (
     stock_code VARCHAR(20),
     stock_name VARCHAR(100),
     title TEXT,
+    description TEXT,
     link TEXT UNIQUE,
     published_at TIMESTAMP,
     source VARCHAR(100),
     keyword TEXT,
+    search_term TEXT,
+    search_term_type TEXT,
+    search_term_score NUMERIC(10, 2),
     created_at TIMESTAMP DEFAULT NOW()
 );
+
+ALTER TABLE news_article
+    ADD COLUMN IF NOT EXISTS description TEXT;
+
+ALTER TABLE news_article
+    ADD COLUMN IF NOT EXISTS search_term TEXT;
+
+ALTER TABLE news_article
+    ADD COLUMN IF NOT EXISTS search_term_type TEXT;
+
+ALTER TABLE news_article
+    ADD COLUMN IF NOT EXISTS search_term_score NUMERIC(10, 2);
 
 CREATE TABLE IF NOT EXISTS pdf_signal_item (
     id BIGSERIAL PRIMARY KEY,

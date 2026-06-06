@@ -45,37 +45,96 @@ def run(target_date: date) -> None:
     print(f"news_article 저장 완료: {news_count}건")
 
 
-def collect_news(stock_code: str) -> None:
+def collect_news(
+    stock_code: str | None = None,
+    stock_name: str | None = None,
+    max_terms: int = 10,
+    max_news_per_term: int = 20,
+) -> None:
     import pandas as pd
 
-    from collector.news_collector import collect_news_for_signals
-    from database.news_repository import load_active_stock_keywords, save_news_articles
-    from database.stock_repository import load_stock_master_by_code
+    from collector.news_collector import OUTPUT_COLUMNS, search_news_by_keyword
+    from database.news_repository import (
+        load_stock_for_news,
+        load_stock_search_terms,
+        save_news_articles,
+    )
 
-    stock_code = stock_code.strip()
-    if not stock_code:
-        raise ValueError("--stock-code must not be empty")
-
-    stock = load_stock_master_by_code(stock_code)
+    stock = load_stock_for_news(stock_code=stock_code, stock_name=stock_name)
     if stock is None:
-        print(f"stock_master에서 종목을 찾을 수 없습니다: {stock_code}")
+        target = stock_code or stock_name or "-"
+        print(f"대상 종목을 찾을 수 없습니다: {target}")
         return
 
-    print(f"뉴스 단독 수집 시작: {stock['stock_name']} ({stock['stock_code']})")
-    keyword_df = load_active_stock_keywords([stock["stock_code"]])
-    print(f"stock_keyword_map 활성 키워드 조회 완료: {len(keyword_df)}건")
+    term_df = load_stock_search_terms(stock["stock_name"], limit=max_terms)
+    if term_df.empty:
+        term_df = pd.DataFrame(
+            [
+                {
+                    "search_term": stock["stock_name"],
+                    "term_type": "STOCK_NAME",
+                    "score": 100,
+                }
+            ]
+        )
 
-    stock_df = pd.DataFrame(
-        [
-            {
-                "stock_code": stock["stock_code"],
-                "stock_name": stock["stock_name"],
-            }
-        ]
-    )
-    news_df = collect_news_for_signals(stock_df, keyword_df=keyword_df)
-    news_count = save_news_articles(news_df)
-    print(f"news_article 저장 완료: {news_count}건")
+    frames: list[pd.DataFrame] = []
+    collected_counts: dict[str, int] = {}
+    error_terms: list[str] = []
+
+    for row in term_df.itertuples(index=False):
+        search_term = str(row.search_term).strip()
+        term_type = str(row.term_type).strip()
+        term_score = row.score
+        if not search_term:
+            continue
+
+        try:
+            frame = search_news_by_keyword(
+                keyword=search_term,
+                stock_code=stock["stock_code"],
+                stock_name=stock["stock_name"],
+                display=max_news_per_term,
+            )
+        except RuntimeError as error:
+            print(f"[WARN] 뉴스 검색 실패: {search_term} - {error}")
+            error_terms.append(search_term)
+            continue
+
+        collected_counts[search_term] = len(frame)
+        if frame.empty:
+            continue
+
+        frame = frame.copy()
+        frame["search_term"] = search_term
+        frame["search_term_type"] = term_type
+        frame["search_term_score"] = term_score
+        frames.append(frame)
+
+    if frames:
+        news_df = pd.concat(frames, ignore_index=True)
+    else:
+        news_df = pd.DataFrame(columns=OUTPUT_COLUMNS)
+
+    raw_count = len(news_df)
+    if not news_df.empty and "link" in news_df.columns:
+        news_df = news_df.drop_duplicates(subset=["link"])
+
+    saved_count = save_news_articles(news_df)
+    duplicate_count = raw_count - saved_count
+
+    print(f"대상 종목: {stock['stock_name']}")
+    print(f"사용 검색어 수: {len(term_df)}")
+    print("사용 검색어 목록: " + ", ".join(term_df["search_term"].astype(str).tolist()))
+    print("검색어별 수집 건수:")
+    for search_term, count in collected_counts.items():
+        print(f"- {search_term}: {count}건")
+    print(f"신규 저장 건수: {saved_count}건")
+    print(f"중복 제외 건수: {duplicate_count}건")
+    if error_terms:
+        print("오류 검색어 목록: " + ", ".join(error_terms))
+    else:
+        print("오류 검색어 목록: 없음")
 
 
 def ingest_pdf(pdf_dir: str, limit: int | None = None) -> None:
@@ -284,6 +343,19 @@ def main() -> None:
     parser.add_argument("command", nargs="?", help="Command to run")
     parser.add_argument("--date", help="Target date in YYYY-MM-DD format")
     parser.add_argument("--stock-code", help="Stock code for collect-news command")
+    parser.add_argument("--stock-name", help="Stock name for collect-news command")
+    parser.add_argument(
+        "--max-terms",
+        type=int,
+        default=10,
+        help="Maximum number of search terms for collect-news command",
+    )
+    parser.add_argument(
+        "--max-news-per-term",
+        type=int,
+        default=20,
+        help="Maximum number of news articles per search term",
+    )
     parser.add_argument(
         "--pdf-dir",
         default="data/pdfs",
@@ -312,9 +384,14 @@ def main() -> None:
         return
 
     if args.command == "collect-news":
-        if not args.stock_code:
-            parser.error("collect-news requires --stock-code")
-        collect_news(args.stock_code)
+        if not args.stock_code and not args.stock_name:
+            parser.error("collect-news requires --stock-code or --stock-name")
+        collect_news(
+            stock_code=args.stock_code,
+            stock_name=args.stock_name,
+            max_terms=args.max_terms,
+            max_news_per_term=args.max_news_per_term,
+        )
         return
 
     if args.command == "ingest-pdf":
