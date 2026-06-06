@@ -15,6 +15,7 @@ NEWS_COLUMNS = [
     "source",
     "keyword",
     "search_term",
+    "search_query",
     "search_term_type",
     "search_term_score",
     "relevance_score",
@@ -130,6 +131,17 @@ def apply_news_relevance_scores(df: pd.DataFrame) -> pd.DataFrame:
     df["relevance_score"] = [score["relevance_score"] for score in scores]
     df["relevance_reason"] = [score["relevance_reason"] for score in scores]
     df["is_relevant"] = [score["is_relevant"] for score in scores]
+
+    if "search_query" in df.columns:
+        df["relevance_reason"] = [
+            (
+                f"{reason}, search_query:{query}"
+                if query and not pd.isna(query)
+                else reason
+            )
+            for reason, query in zip(df["relevance_reason"], df["search_query"])
+        ]
+
     return df
 
 
@@ -285,6 +297,7 @@ def save_news_articles(df: pd.DataFrame) -> int:
             source,
             keyword,
             search_term,
+            search_query,
             search_term_type,
             search_term_score,
             relevance_score,
@@ -301,6 +314,7 @@ def save_news_articles(df: pd.DataFrame) -> int:
             %(source)s,
             %(keyword)s,
             %(search_term)s,
+            %(search_query)s,
             %(search_term_type)s,
             %(search_term_score)s,
             %(relevance_score)s,
@@ -333,7 +347,8 @@ def score_news_relevance(stock_name: str, limit: int | None = None) -> dict[str,
             description,
             search_term,
             search_term_type,
-            keyword
+            keyword,
+            search_query
         FROM news_article
         WHERE stock_name = %(stock_name)s
         ORDER BY published_at DESC NULLS LAST, id DESC
@@ -371,6 +386,10 @@ def score_news_relevance(stock_name: str, limit: int | None = None) -> dict[str,
                     search_term=row[4] or row[6],
                     search_term_type=row[5],
                 )
+                if row[7]:
+                    score["relevance_reason"] = (
+                        f"{score['relevance_reason']}, search_query:{row[7]}"
+                    )
                 cursor.execute(update_sql, {"id": article_id, **score})
 
                 updated_count += 1

@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS news_article (
     source VARCHAR(100),
     keyword TEXT,
     search_term TEXT,
+    search_query TEXT,
     search_term_type TEXT,
     search_term_score NUMERIC(10, 2),
     relevance_score NUMERIC(10, 2),
@@ -99,6 +100,9 @@ ALTER TABLE news_article
 
 ALTER TABLE news_article
     ADD COLUMN IF NOT EXISTS search_term TEXT;
+
+ALTER TABLE news_article
+    ADD COLUMN IF NOT EXISTS search_query TEXT;
 
 ALTER TABLE news_article
     ADD COLUMN IF NOT EXISTS search_term_type TEXT;

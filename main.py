@@ -45,6 +45,12 @@ def run(target_date: date) -> None:
     print(f"news_article 저장 완료: {news_count}건")
 
 
+def build_news_query(stock_name: str, search_term: str, term_type: str) -> str:
+    if term_type == "STOCK_NAME":
+        return search_term
+    return f"{stock_name} {search_term}".strip()
+
+
 def collect_news(
     stock_code: str | None = None,
     stock_name: str | None = None,
@@ -81,6 +87,7 @@ def collect_news(
 
     frames: list[pd.DataFrame] = []
     collected_counts: dict[str, int] = {}
+    search_query_map: dict[str, str] = {}
     error_terms: list[str] = []
 
     for row in term_df.itertuples(index=False):
@@ -89,25 +96,28 @@ def collect_news(
         term_score = row.score
         if not search_term:
             continue
+        search_query = build_news_query(stock["stock_name"], search_term, term_type)
+        search_query_map[search_term] = search_query
 
         try:
             frame = search_news_by_keyword(
-                keyword=search_term,
+                keyword=search_query,
                 stock_code=stock["stock_code"],
                 stock_name=stock["stock_name"],
                 display=max_news_per_term,
             )
         except RuntimeError as error:
-            print(f"[WARN] 뉴스 검색 실패: {search_term} - {error}")
-            error_terms.append(search_term)
+            print(f"[WARN] 뉴스 검색 실패: {search_term} -> {search_query} - {error}")
+            error_terms.append(f"{search_term} -> {search_query}")
             continue
 
-        collected_counts[search_term] = len(frame)
+        collected_counts[search_query] = len(frame)
         if frame.empty:
             continue
 
         frame = frame.copy()
         frame["search_term"] = search_term
+        frame["search_query"] = search_query
         frame["search_term_type"] = term_type
         frame["search_term_score"] = term_score
         frames.append(frame)
@@ -132,10 +142,18 @@ def collect_news(
 
     print(f"대상 종목: {stock['stock_name']}")
     print(f"사용 검색어 수: {len(term_df)}")
-    print("사용 검색어 목록: " + ", ".join(term_df["search_term"].astype(str).tolist()))
-    print("검색어별 수집 건수:")
-    for search_term, count in collected_counts.items():
-        print(f"- {search_term}: {count}건")
+    print("사용 검색어:")
+    for row in term_df.itertuples(index=False):
+        search_term = str(row.search_term).strip()
+        term_type = str(row.term_type).strip()
+        search_query = search_query_map.get(
+            search_term,
+            build_news_query(stock["stock_name"], search_term, term_type),
+        )
+        print(f"- {search_term} [{term_type}] -> {search_query}")
+    print("검색 쿼리별 수집 건수:")
+    for search_query, count in collected_counts.items():
+        print(f"- {search_query}: {count}건")
     print(f"신규 저장 건수: {saved_count}건")
     print(f"중복 제외 건수: {duplicate_count}건")
     print(f"관련 뉴스 건수: {relevant_count}건")
