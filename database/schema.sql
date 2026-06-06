@@ -218,6 +218,18 @@ CREATE TABLE IF NOT EXISTS stock_knowledge_graph (
     UNIQUE (stock_name, node_type, node_value, relation_type)
 );
 
+CREATE TABLE IF NOT EXISTS stock_search_term (
+    id BIGSERIAL PRIMARY KEY,
+    stock_name TEXT NOT NULL,
+    search_term TEXT NOT NULL,
+    term_type TEXT NOT NULL,
+    score NUMERIC(10, 2) NOT NULL DEFAULT 0,
+    source TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (stock_name, search_term)
+);
+
 CREATE INDEX IF NOT EXISTS idx_daily_price_trade_date
     ON daily_price (trade_date);
 
@@ -299,3 +311,9 @@ CREATE INDEX IF NOT EXISTS idx_stock_knowledge_graph_node
 
 CREATE INDEX IF NOT EXISTS idx_stock_knowledge_graph_relation
     ON stock_knowledge_graph (relation_type);
+
+CREATE INDEX IF NOT EXISTS idx_stock_search_term_stock_name
+    ON stock_search_term (stock_name);
+
+CREATE INDEX IF NOT EXISTS idx_stock_search_term_score
+    ON stock_search_term (score DESC);

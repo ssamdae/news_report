@@ -238,6 +238,17 @@ STOCK_KEYWORD_SEED = {
     ],
 }
 
+STOP_TERMS = (
+    "주식",
+    "증시",
+    "코스피",
+    "코스닥",
+    "상승",
+    "하락",
+    "급등",
+    "급락",
+)
+
 
 def build_stock_theme_map() -> dict[str, int]:
     insert_themes_sql = """
@@ -906,3 +917,233 @@ def get_expanded_search_terms(stock_name: str, limit: int = 20) -> list[str]:
                 terms.append(term)
 
     return terms
+
+
+def ensure_stock_search_term_table() -> None:
+    sql = """
+        CREATE TABLE IF NOT EXISTS stock_search_term (
+            id BIGSERIAL PRIMARY KEY,
+            stock_name TEXT NOT NULL,
+            search_term TEXT NOT NULL,
+            term_type TEXT NOT NULL,
+            score NUMERIC(10, 2) NOT NULL DEFAULT 0,
+            source TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (stock_name, search_term)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_stock_search_term_stock_name
+            ON stock_search_term (stock_name);
+
+        CREATE INDEX IF NOT EXISTS idx_stock_search_term_score
+            ON stock_search_term (score DESC);
+    """
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql)
+        connection.commit()
+
+
+def build_terms_for_stock() -> str:
+    return """
+        WITH raw_terms AS (
+            SELECT
+                TRIM(stock_name) AS stock_name,
+                TRIM(stock_name) AS search_term,
+                'STOCK_NAME' AS term_type,
+                100::numeric(10, 2) AS score,
+                'stock_profile' AS source
+            FROM stock_profile
+            WHERE TRIM(stock_name) <> ''
+
+            UNION ALL
+
+            SELECT
+                TRIM(stock_name) AS stock_name,
+                TRIM(primary_theme) AS search_term,
+                'PRIMARY_THEME' AS term_type,
+                90::numeric(10, 2) AS score,
+                'stock_profile' AS source
+            FROM stock_profile
+            WHERE primary_theme IS NOT NULL
+                AND TRIM(primary_theme) <> ''
+
+            UNION ALL
+
+            SELECT
+                TRIM(stock_name) AS stock_name,
+                TRIM(node_value) AS search_term,
+                CASE
+                    WHEN relation_type = 'STOCK_KEYWORD' THEN 'KEYWORD'
+                    ELSE relation_type
+                END AS term_type,
+                CASE relation_type
+                    WHEN 'PRIMARY_THEME' THEN 90::numeric(10, 2)
+                    WHEN 'SECONDARY_THEME' THEN 80::numeric(10, 2)
+                    WHEN 'RELATED_THEME' THEN 70::numeric(10, 2)
+                    WHEN 'STOCK_KEYWORD' THEN 85::numeric(10, 2)
+                    ELSE score
+                END AS score,
+                'stock_knowledge_graph' AS source
+            FROM stock_knowledge_graph
+            WHERE node_type IN ('THEME', 'KEYWORD')
+                AND relation_type IN (
+                    'PRIMARY_THEME',
+                    'SECONDARY_THEME',
+                    'RELATED_THEME',
+                    'STOCK_KEYWORD'
+                )
+                AND TRIM(stock_name) <> ''
+                AND TRIM(node_value) <> ''
+
+            UNION ALL
+
+            SELECT
+                TRIM(COALESCE(p.stock_name, m.stock_name, k.stock_name)) AS stock_name,
+                TRIM(k.keyword) AS search_term,
+                'KEYWORD' AS term_type,
+                85::numeric(10, 2) AS score,
+                'stock_keyword_map' AS source
+            FROM stock_keyword_map k
+            LEFT JOIN stock_master m
+                ON m.stock_code = k.stock_code
+            LEFT JOIN stock_profile p
+                ON p.stock_name = k.stock_name
+            WHERE k.is_active = TRUE
+                AND TRIM(k.keyword) <> ''
+                AND TRIM(COALESCE(p.stock_name, m.stock_name, k.stock_name)) <> ''
+        ),
+        filtered_terms AS (
+            SELECT *
+            FROM raw_terms
+            WHERE search_term <> ''
+                AND search_term <> ALL(%(stop_terms)s)
+        ),
+        ranked_terms AS (
+            SELECT
+                stock_name,
+                search_term,
+                term_type,
+                score,
+                source,
+                ROW_NUMBER() OVER (
+                    PARTITION BY stock_name, search_term
+                    ORDER BY score DESC, term_type, source
+                ) AS row_number
+            FROM filtered_terms
+        ),
+        dedup_terms AS (
+            SELECT
+                stock_name,
+                search_term,
+                term_type,
+                score,
+                source
+            FROM ranked_terms
+            WHERE row_number = 1
+        )
+    """
+
+
+def upsert_stock_search_terms() -> int:
+    sql = (
+        build_terms_for_stock()
+        + """
+        INSERT INTO stock_search_term (
+            stock_name,
+            search_term,
+            term_type,
+            score,
+            source
+        )
+        SELECT
+            stock_name,
+            search_term,
+            term_type,
+            score,
+            source
+        FROM dedup_terms
+        ON CONFLICT (stock_name, search_term)
+        DO UPDATE SET
+            term_type = CASE
+                WHEN EXCLUDED.score >= stock_search_term.score
+                    THEN EXCLUDED.term_type
+                ELSE stock_search_term.term_type
+            END,
+            score = GREATEST(stock_search_term.score, EXCLUDED.score),
+            source = CASE
+                WHEN EXCLUDED.score >= stock_search_term.score
+                    THEN EXCLUDED.source
+                ELSE stock_search_term.source
+            END,
+            updated_at = NOW()
+        RETURNING id
+        """
+    )
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, {"stop_terms": list(STOP_TERMS)})
+            upserted_count = len(cursor.fetchall())
+        connection.commit()
+
+    return upserted_count
+
+
+def _load_search_term_summary() -> dict:
+    summary_sql = """
+        SELECT
+            COUNT(DISTINCT stock_name) AS stock_count,
+            COUNT(*) AS search_term_count
+        FROM stock_search_term
+    """
+    examples_sql = """
+        WITH top_stocks AS (
+            SELECT
+                stock_name,
+                COUNT(*) AS term_count
+            FROM stock_search_term
+            GROUP BY stock_name
+            ORDER BY term_count DESC, stock_name
+            LIMIT 5
+        )
+        SELECT
+            t.stock_name,
+            STRING_AGG(
+                s.search_term,
+                ', '
+                ORDER BY s.score DESC, s.search_term
+            ) AS search_terms
+        FROM top_stocks t
+        JOIN stock_search_term s
+            ON s.stock_name = t.stock_name
+        GROUP BY t.stock_name, t.term_count
+        ORDER BY t.term_count DESC, t.stock_name
+    """
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(summary_sql)
+            stock_count, search_term_count = cursor.fetchone()
+
+            cursor.execute(examples_sql)
+            examples = [
+                {"stock_name": row[0], "search_terms": row[1]}
+                for row in cursor.fetchall()
+            ]
+
+    return {
+        "stock_count": stock_count,
+        "search_term_count": search_term_count,
+        "examples": examples,
+    }
+
+
+def run_build_search_terms() -> dict:
+    ensure_stock_search_term_table()
+    upserted_count = upsert_stock_search_terms()
+    summary = _load_search_term_summary()
+    summary["upserted_count"] = upserted_count
+    return summary

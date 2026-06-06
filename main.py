@@ -267,6 +267,18 @@ def seed_stock_keywords() -> None:
         print("stock_master 미등록 종목: " + ", ".join(result["missing_stocks"]))
 
 
+def build_search_terms() -> None:
+    from database.theme_repository import run_build_search_terms
+
+    result = run_build_search_terms()
+    print(f"생성/업데이트 총 건수: {result['upserted_count']}건")
+    print(f"대상 종목 수: {result['stock_count']}건")
+    print(f"검색어 총 건수: {result['search_term_count']}건")
+    print("상위 예시 5개 종목의 검색어 목록:")
+    for example in result["examples"]:
+        print(f"- {example['stock_name']}: {example['search_terms']}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stock research system")
     parser.add_argument("command", nargs="?", help="Command to run")
@@ -339,6 +351,10 @@ def main() -> None:
 
     if args.command == "seed-stock-keywords":
         seed_stock_keywords()
+        return
+
+    if args.command == "build-search-terms":
+        build_search_terms()
         return
 
     print("Stock research system scaffold")
