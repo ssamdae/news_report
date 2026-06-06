@@ -88,6 +88,9 @@ CREATE TABLE IF NOT EXISTS news_article (
     search_term TEXT,
     search_term_type TEXT,
     search_term_score NUMERIC(10, 2),
+    relevance_score NUMERIC(10, 2),
+    relevance_reason TEXT,
+    is_relevant BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -102,6 +105,15 @@ ALTER TABLE news_article
 
 ALTER TABLE news_article
     ADD COLUMN IF NOT EXISTS search_term_score NUMERIC(10, 2);
+
+ALTER TABLE news_article
+    ADD COLUMN IF NOT EXISTS relevance_score NUMERIC(10, 2);
+
+ALTER TABLE news_article
+    ADD COLUMN IF NOT EXISTS relevance_reason TEXT;
+
+ALTER TABLE news_article
+    ADD COLUMN IF NOT EXISTS is_relevant BOOLEAN NOT NULL DEFAULT TRUE;
 
 CREATE TABLE IF NOT EXISTS pdf_signal_item (
     id BIGSERIAL PRIMARY KEY,

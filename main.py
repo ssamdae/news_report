@@ -55,6 +55,7 @@ def collect_news(
 
     from collector.news_collector import OUTPUT_COLUMNS, search_news_by_keyword
     from database.news_repository import (
+        apply_news_relevance_scores,
         load_stock_for_news,
         load_stock_search_terms,
         save_news_articles,
@@ -120,8 +121,14 @@ def collect_news(
     if not news_df.empty and "link" in news_df.columns:
         news_df = news_df.drop_duplicates(subset=["link"])
 
+    news_df = apply_news_relevance_scores(news_df)
     saved_count = save_news_articles(news_df)
     duplicate_count = raw_count - saved_count
+    relevant_count = int(news_df["is_relevant"].sum()) if not news_df.empty else 0
+    irrelevant_count = len(news_df) - relevant_count
+    average_score = (
+        float(news_df["relevance_score"].mean()) if not news_df.empty else 0.0
+    )
 
     print(f"대상 종목: {stock['stock_name']}")
     print(f"사용 검색어 수: {len(term_df)}")
@@ -131,6 +138,9 @@ def collect_news(
         print(f"- {search_term}: {count}건")
     print(f"신규 저장 건수: {saved_count}건")
     print(f"중복 제외 건수: {duplicate_count}건")
+    print(f"관련 뉴스 건수: {relevant_count}건")
+    print(f"비관련 뉴스 건수: {irrelevant_count}건")
+    print(f"평균 relevance_score: {average_score:.2f}")
     if error_terms:
         print("오류 검색어 목록: " + ", ".join(error_terms))
     else:
@@ -338,6 +348,16 @@ def build_search_terms() -> None:
         print(f"- {example['stock_name']}: {example['search_terms']}")
 
 
+def score_news_relevance_command(stock_name: str, limit: int | None = None) -> None:
+    from database.news_repository import score_news_relevance
+
+    result = score_news_relevance(stock_name=stock_name, limit=limit)
+    print(f"relevance_score 갱신 완료: {result['updated_count']}건")
+    print(f"관련 뉴스 건수: {result['relevant_count']}건")
+    print(f"비관련 뉴스 건수: {result['irrelevant_count']}건")
+    print(f"평균 relevance_score: {result['average_relevance_score']:.2f}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stock research system")
     parser.add_argument("command", nargs="?", help="Command to run")
@@ -364,7 +384,7 @@ def main() -> None:
     parser.add_argument(
         "--limit",
         type=int,
-        help="Maximum number of PDFs to ingest",
+        help="Maximum number of rows/PDFs to process",
     )
     parser.add_argument(
         "--inspect-pages",
@@ -432,6 +452,12 @@ def main() -> None:
 
     if args.command == "build-search-terms":
         build_search_terms()
+        return
+
+    if args.command == "score-news-relevance":
+        if not args.stock_name:
+            parser.error("score-news-relevance requires --stock-name")
+        score_news_relevance_command(args.stock_name, limit=args.limit)
         return
 
     print("Stock research system scaffold")
