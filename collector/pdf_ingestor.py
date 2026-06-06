@@ -29,6 +29,7 @@ STOCK_ITEM_PATTERN = re.compile(
 )
 THEME_MARKERS = ("테마", "Theme", "THEME")
 HEADER_WORDS = ("종목", "등락률", "거래대금", "전일대비")
+FORMAT_TYPES = ("recent_angle", "legacy_hash", "bracket_theme", "unknown")
 
 
 def find_pdf_files(pdf_dir: str | Path, limit: int | None = None) -> list[Path]:
@@ -42,7 +43,7 @@ def find_pdf_files(pdf_dir: str | Path, limit: int | None = None) -> list[Path]:
     return pdf_files
 
 
-def extract_pdf_text(pdf_path: str | Path) -> str:
+def extract_pdf_text(pdf_path: str | Path, max_pages: int | None = None) -> str:
     try:
         from pypdf import PdfReader
     except ModuleNotFoundError as exc:
@@ -51,23 +52,97 @@ def extract_pdf_text(pdf_path: str | Path) -> str:
         ) from exc
 
     reader = PdfReader(str(pdf_path))
-    page_texts = [page.extract_text() or "" for page in reader.pages]
+    pages = reader.pages[:max_pages] if max_pages is not None else reader.pages
+    page_texts = [page.extract_text() or "" for page in pages]
     return "\n".join(page_texts)
+
+
+def detect_pdf_format_type(pdf_path: str | Path, inspect_pages: int = 5) -> str:
+    text = extract_pdf_text(pdf_path, max_pages=inspect_pages)
+    return detect_format_type(text)
+
+
+def detect_format_type(text: str) -> str:
+    lines = _iter_logical_lines(text)
+    if any(re.match(r"^<\s*.+?\s*>$", line) for line in lines):
+        return "recent_angle"
+    if any(re.match(r"^■\s*#\s*.+", line) for line in lines):
+        return "legacy_hash"
+    if any(re.match(r"^\[\s*[^\]]+?\s*\]$", line) for line in lines):
+        return "bracket_theme"
+    return "unknown"
+
+
+def inspect_pdf_formats(
+    pdf_dir: str | Path = "data/pdfs",
+    inspect_pages: int = 5,
+    unknown_output_path: str | Path = "data/pdf_inspect/unknown_files.txt",
+) -> dict[str, list[Path]]:
+    files_by_format: dict[str, list[Path]] = {
+        format_type: [] for format_type in FORMAT_TYPES
+    }
+
+    for pdf_path in find_pdf_files(pdf_dir):
+        format_type = detect_pdf_format_type(pdf_path, inspect_pages=inspect_pages)
+        files_by_format[format_type].append(pdf_path)
+
+    unknown_files = files_by_format["unknown"]
+    output_path = Path(unknown_output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        "\n".join(str(path) for path in unknown_files),
+        encoding="utf-8",
+    )
+
+    return files_by_format
 
 
 def parse_signal_evening_pdf(pdf_path: str | Path) -> pd.DataFrame:
     path = Path(pdf_path)
     text = extract_pdf_text(path)
-    return parse_signal_evening_text(text, path.name)
+    format_type = detect_format_type(text)
+    return parse_signal_evening_text(text, path.name, format_type=format_type)
 
 
-def parse_signal_evening_text(text: str, pdf_file_name: str) -> pd.DataFrame:
+def parse_signal_evening_text(
+    text: str,
+    pdf_file_name: str,
+    format_type: str | None = None,
+) -> pd.DataFrame:
+    format_type = format_type or detect_format_type(text)
+    if format_type == "recent_angle":
+        return _parse_recent_angle_text(text, pdf_file_name)
+    if format_type == "legacy_hash":
+        return _parse_legacy_hash_text(text, pdf_file_name)
+    if format_type == "bracket_theme":
+        return _parse_bracket_theme_text(text, pdf_file_name)
+    return pd.DataFrame(columns=OUTPUT_COLUMNS)
+
+
+def _parse_recent_angle_text(text: str, pdf_file_name: str) -> pd.DataFrame:
+    return _parse_with_theme_format(text, pdf_file_name, format_type="recent_angle")
+
+
+def _parse_legacy_hash_text(text: str, pdf_file_name: str) -> pd.DataFrame:
+    return _parse_with_theme_format(text, pdf_file_name, format_type="legacy_hash")
+
+
+def _parse_bracket_theme_text(text: str, pdf_file_name: str) -> pd.DataFrame:
+    return _parse_with_theme_format(text, pdf_file_name, format_type="bracket_theme")
+
+
+def _parse_with_theme_format(
+    text: str,
+    pdf_file_name: str,
+    format_type: str,
+) -> pd.DataFrame:
+
     report_date = _extract_report_date(pdf_file_name, text)
     current_theme = "미분류"
     rows: list[dict[str, Any]] = []
 
     for line in _iter_logical_lines(text):
-        theme_name = _extract_theme_name(line)
+        theme_name = _extract_theme_name(line, format_type)
         if theme_name is not None:
             current_theme = theme_name
             continue
@@ -138,13 +213,24 @@ def _iter_logical_lines(text: str) -> list[str]:
     return lines
 
 
-def _extract_theme_name(line: str) -> str | None:
+def _extract_theme_name(line: str, format_type: str) -> str | None:
     if any(word in line for word in HEADER_WORDS):
         return None
 
-    bracket_match = re.match(r"^<\s*(.+?)\s*>$", line)
-    if bracket_match:
-        return bracket_match.group(1).strip()
+    if format_type == "recent_angle":
+        angle_match = re.match(r"^<\s*(.+?)\s*>$", line)
+        if angle_match:
+            return angle_match.group(1).strip()
+
+    if format_type == "legacy_hash":
+        hash_match = re.match(r"^■\s*#\s*(.+?)\s*$", line)
+        if hash_match:
+            return hash_match.group(1).strip()
+
+    if format_type == "bracket_theme":
+        bracket_match = re.match(r"^\[\s*(.+?)\s*\]$", line)
+        if bracket_match:
+            return bracket_match.group(1).strip()
 
     if not any(marker in line for marker in THEME_MARKERS):
         return None

@@ -77,7 +77,11 @@ def collect_news(stock_code: str) -> None:
 
 
 def ingest_pdf(pdf_dir: str, limit: int | None = None) -> None:
-    from collector.pdf_ingestor import find_pdf_files, parse_signal_evening_pdfs
+    from collector.pdf_ingestor import (
+        detect_pdf_format_type,
+        find_pdf_files,
+        parse_signal_evening_pdfs,
+    )
     from database.pdf_repository import save_pdf_signal_items
 
     pdf_files = find_pdf_files(pdf_dir, limit=limit)
@@ -87,13 +91,32 @@ def ingest_pdf(pdf_dir: str, limit: int | None = None) -> None:
 
     print(f"PDF ingest 시작: {len(pdf_files)}개")
     for pdf_file in pdf_files:
-        print(f"- {pdf_file.name}")
+        format_type = detect_pdf_format_type(pdf_file)
+        print(f"- {pdf_file.name} ({format_type})")
 
     signal_df = parse_signal_evening_pdfs(pdf_dir=pdf_dir, limit=limit)
     print(f"PDF 파싱 완료: {len(signal_df)}건")
 
     saved_count = save_pdf_signal_items(signal_df)
     print(f"pdf_signal_item 저장 완료: {saved_count}건")
+
+
+def inspect_pdf_format_command(pdf_dir: str, inspect_pages: int) -> None:
+    from collector.pdf_ingestor import FORMAT_TYPES, inspect_pdf_formats
+
+    files_by_format = inspect_pdf_formats(
+        pdf_dir=pdf_dir,
+        inspect_pages=inspect_pages,
+    )
+
+    total_count = sum(len(files) for files in files_by_format.values())
+    print(f"PDF 포맷 검사 완료: {total_count}개")
+    for format_type in FORMAT_TYPES:
+        files = files_by_format[format_type]
+        sample_names = ", ".join(path.name for path in files[:3]) or "-"
+        print(f"{format_type}: {len(files)}개 / sample: {sample_names}")
+
+    print("unknown 파일 목록 저장: data/pdf_inspect/unknown_files.txt")
 
 
 def main() -> None:
@@ -110,6 +133,12 @@ def main() -> None:
         "--limit",
         type=int,
         help="Maximum number of PDFs to ingest",
+    )
+    parser.add_argument(
+        "--inspect-pages",
+        type=int,
+        default=5,
+        help="Number of PDF pages to inspect for format detection",
     )
     args = parser.parse_args()
 
@@ -130,6 +159,10 @@ def main() -> None:
 
     if args.command == "ingest-pdf":
         ingest_pdf(args.pdf_dir, limit=args.limit)
+        return
+
+    if args.command == "inspect-pdf-formats":
+        inspect_pdf_format_command(args.pdf_dir, inspect_pages=args.inspect_pages)
         return
 
     print("Stock research system scaffold")
