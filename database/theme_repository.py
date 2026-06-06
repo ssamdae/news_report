@@ -554,11 +554,11 @@ def build_stock_profiles() -> dict[str, int]:
 
 def build_stock_knowledge_graph() -> dict[str, int]:
     upsert_theme_sql = """
-        WITH theme_nodes AS (
+        WITH raw_nodes AS (
             SELECT
-                stock_name,
+                TRIM(stock_name) AS stock_name,
                 'THEME' AS node_type,
-                primary_theme AS node_value,
+                TRIM(primary_theme) AS node_value,
                 'PRIMARY_THEME' AS relation_type,
                 'stock_profile' AS source,
                 100::numeric(10, 2) AS score
@@ -569,9 +569,9 @@ def build_stock_knowledge_graph() -> dict[str, int]:
             UNION ALL
 
             SELECT
-                stock_name,
+                TRIM(stock_name) AS stock_name,
                 'THEME' AS node_type,
-                secondary_theme AS node_value,
+                TRIM(secondary_theme) AS node_value,
                 'SECONDARY_THEME' AS relation_type,
                 'stock_profile' AS source,
                 70::numeric(10, 2) AS score
@@ -582,7 +582,7 @@ def build_stock_knowledge_graph() -> dict[str, int]:
             UNION ALL
 
             SELECT
-                p.stock_name,
+                TRIM(p.stock_name) AS stock_name,
                 'THEME' AS node_type,
                 TRIM(theme_value) AS node_value,
                 'RELATED_THEME' AS relation_type,
@@ -594,6 +594,25 @@ def build_stock_knowledge_graph() -> dict[str, int]:
                 '\\s*,\\s*'
             ) AS theme_value
             WHERE TRIM(theme_value) <> ''
+                AND TRIM(theme_value) <> COALESCE(TRIM(p.primary_theme), '')
+                AND TRIM(theme_value) <> COALESCE(TRIM(p.secondary_theme), '')
+        ),
+        dedup_nodes AS (
+            SELECT
+                stock_name,
+                node_type,
+                node_value,
+                relation_type,
+                MIN(source) AS source,
+                MAX(score) AS score
+            FROM raw_nodes
+            WHERE stock_name <> ''
+                AND node_value <> ''
+            GROUP BY
+                stock_name,
+                node_type,
+                node_value,
+                relation_type
         )
         INSERT INTO stock_knowledge_graph (
             stock_name,
@@ -610,7 +629,7 @@ def build_stock_knowledge_graph() -> dict[str, int]:
             relation_type,
             source,
             score
-        FROM theme_nodes
+        FROM dedup_nodes
         ON CONFLICT (stock_name, node_type, node_value, relation_type)
         DO UPDATE SET
             source = EXCLUDED.source,
@@ -620,6 +639,36 @@ def build_stock_knowledge_graph() -> dict[str, int]:
     """
 
     upsert_keyword_sql = """
+        WITH raw_nodes AS (
+            SELECT
+                TRIM(m.stock_name) AS stock_name,
+                'KEYWORD' AS node_type,
+                TRIM(k.keyword) AS node_value,
+                'STOCK_KEYWORD' AS relation_type,
+                'stock_keyword_map' AS source,
+                80::numeric(10, 2) AS score
+            FROM stock_keyword_map k
+            JOIN stock_master m
+                ON m.stock_code = k.stock_code
+            WHERE k.is_active = TRUE
+                AND TRIM(k.keyword) <> ''
+                AND TRIM(m.stock_name) <> ''
+        ),
+        dedup_nodes AS (
+            SELECT
+                stock_name,
+                node_type,
+                node_value,
+                relation_type,
+                MIN(source) AS source,
+                MAX(score) AS score
+            FROM raw_nodes
+            GROUP BY
+                stock_name,
+                node_type,
+                node_value,
+                relation_type
+        )
         INSERT INTO stock_knowledge_graph (
             stock_name,
             node_type,
@@ -629,18 +678,13 @@ def build_stock_knowledge_graph() -> dict[str, int]:
             score
         )
         SELECT
-            m.stock_name,
-            'KEYWORD' AS node_type,
-            TRIM(k.keyword) AS node_value,
-            'STOCK_KEYWORD' AS relation_type,
-            'stock_keyword_map' AS source,
-            80::numeric(10, 2) AS score
-        FROM stock_keyword_map k
-        JOIN stock_master m
-            ON m.stock_code = k.stock_code
-        WHERE k.is_active = TRUE
-            AND TRIM(k.keyword) <> ''
-            AND TRIM(m.stock_name) <> ''
+            stock_name,
+            node_type,
+            node_value,
+            relation_type,
+            source,
+            score
+        FROM dedup_nodes
         ON CONFLICT (stock_name, node_type, node_value, relation_type)
         DO UPDATE SET
             source = EXCLUDED.source,
