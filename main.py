@@ -201,6 +201,14 @@ def inspect_pdf_format_command(pdf_dir: str, inspect_pages: int) -> None:
     print("unknown 파일 목록 저장: data/pdf_inspect/unknown_files.txt")
 
 
+def build_theme_map() -> None:
+    from database.theme_repository import build_stock_theme_map
+
+    result = build_stock_theme_map()
+    print(f"theme_master 구축 완료: {result['theme_count']}건")
+    print(f"stock_theme_map upsert 완료: {result['stock_theme_map_count']}건")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stock research system")
     parser.add_argument("command", nargs="?", help="Command to run")
@@ -245,6 +253,10 @@ def main() -> None:
 
     if args.command == "inspect-pdf-formats":
         inspect_pdf_format_command(args.pdf_dir, inspect_pages=args.inspect_pages)
+        return
+
+    if args.command == "build-theme-map":
+        build_theme_map()
         return
 
     print("Stock research system scaffold")

@@ -92,6 +92,34 @@ CREATE TABLE IF NOT EXISTS pdf_signal_item (
     )
 );
 
+CREATE TABLE IF NOT EXISTS theme_master (
+    id BIGSERIAL PRIMARY KEY,
+    theme_name TEXT NOT NULL UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS theme_alias (
+    id BIGSERIAL PRIMARY KEY,
+    alias_name TEXT NOT NULL UNIQUE,
+    theme_id BIGINT NOT NULL REFERENCES theme_master(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS stock_theme_map (
+    id BIGSERIAL PRIMARY KEY,
+    stock_name TEXT NOT NULL,
+    theme_id BIGINT NOT NULL REFERENCES theme_master(id),
+    first_seen_date DATE,
+    last_seen_date DATE,
+    hit_count INTEGER NOT NULL DEFAULT 0,
+    avg_change_rate NUMERIC(10, 2),
+    max_change_rate NUMERIC(10, 2),
+    total_trading_value NUMERIC(24, 2),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (stock_name, theme_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_daily_price_trade_date
     ON daily_price (trade_date);
 
@@ -121,3 +149,15 @@ CREATE INDEX IF NOT EXISTS idx_pdf_signal_item_report_date
 
 CREATE INDEX IF NOT EXISTS idx_pdf_signal_item_stock_name
     ON pdf_signal_item (stock_name);
+
+CREATE INDEX IF NOT EXISTS idx_theme_alias_theme_id
+    ON theme_alias (theme_id);
+
+CREATE INDEX IF NOT EXISTS idx_stock_theme_map_theme_id
+    ON stock_theme_map (theme_id);
+
+CREATE INDEX IF NOT EXISTS idx_stock_theme_map_stock_name
+    ON stock_theme_map (stock_name);
+
+CREATE INDEX IF NOT EXISTS idx_stock_theme_map_hit_count
+    ON stock_theme_map (hit_count DESC);
