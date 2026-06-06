@@ -238,6 +238,13 @@ def build_canonical_theme_map() -> None:
     )
 
 
+def build_stock_profile() -> None:
+    from database.theme_repository import build_stock_profiles
+
+    result = build_stock_profiles()
+    print(f"stock_profile upsert 완료: {result['stock_profile_count']}건")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stock research system")
     parser.add_argument("command", nargs="?", help="Command to run")
@@ -298,6 +305,10 @@ def main() -> None:
 
     if args.command == "build-canonical-theme-map":
         build_canonical_theme_map()
+        return
+
+    if args.command == "build-stock-profile":
+        build_stock_profile()
         return
 
     print("Stock research system scaffold")

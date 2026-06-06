@@ -106,6 +106,23 @@ def load_stock_detail(stock_code: str) -> pd.DataFrame:
     return read_sql(query, {"stock_code": stock_code, "signal_name": SIGNAL_NAME})
 
 
+def load_stock_profile(stock_name: str) -> pd.DataFrame:
+    query = """
+        SELECT
+            stock_name,
+            primary_theme,
+            secondary_theme,
+            related_themes,
+            theme_count,
+            total_hit_count,
+            first_seen_date,
+            last_seen_date
+        FROM stock_profile
+        WHERE stock_name = %(stock_name)s
+    """
+    return read_sql(query, {"stock_name": stock_name})
+
+
 def load_news_by_stock(stock_code: str) -> pd.DataFrame:
     query = """
         SELECT
@@ -227,6 +244,35 @@ else:
     except Exception as error:
         st.error(f"종목 상세 조회 중 오류가 발생했습니다: {error}")
         st.stop()
+
+    selected_stock_name = search_results.loc[
+        search_results["stock_code"] == selected_stock_code,
+        "stock_name",
+    ].iloc[0]
+
+    st.subheader("종목 테마 프로필")
+    try:
+        profile = load_stock_profile(selected_stock_name)
+    except Exception as error:
+        st.warning(f"종목 테마 프로필 조회 중 오류가 발생했습니다: {error}")
+    else:
+        if profile.empty:
+            st.info("저장된 종목 테마 프로필이 없습니다.")
+        else:
+            profile_row = profile.iloc[0]
+            profile_cols = st.columns(4)
+            profile_cols[0].metric("대표 테마", profile_row["primary_theme"] or "-")
+            profile_cols[1].metric("보조 테마", profile_row["secondary_theme"] or "-")
+            profile_cols[2].metric(
+                "총 등장 횟수",
+                f"{int(profile_row['total_hit_count']):,}",
+            )
+            profile_cols[3].metric("테마 수", f"{int(profile_row['theme_count']):,}")
+
+            date_cols = st.columns(2)
+            date_cols[0].metric("최초 등장일", str(profile_row["first_seen_date"]))
+            date_cols[1].metric("최근 등장일", str(profile_row["last_seen_date"]))
+            st.caption(f"연관 테마: {profile_row['related_themes']}")
 
     if detail.empty:
         st.info("선택한 종목의 500억봉 이력이 없습니다.")

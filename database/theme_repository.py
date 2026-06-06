@@ -468,3 +468,85 @@ def build_stock_canonical_theme_map() -> dict[str, int]:
     return {
         "stock_canonical_theme_map_count": stock_canonical_theme_map_count,
     }
+
+
+def build_stock_profiles() -> dict[str, int]:
+    upsert_sql = """
+        WITH ranked AS (
+            SELECT
+                stock_name,
+                canonical_theme,
+                first_seen_date,
+                last_seen_date,
+                hit_count,
+                ROW_NUMBER() OVER (
+                    PARTITION BY stock_name
+                    ORDER BY hit_count DESC, canonical_theme
+                ) AS theme_rank
+            FROM stock_canonical_theme_map
+            WHERE TRIM(stock_name) <> ''
+                AND TRIM(canonical_theme) <> ''
+        ),
+        aggregated AS (
+            SELECT
+                stock_name,
+                MAX(canonical_theme) FILTER (WHERE theme_rank = 1)
+                    AS primary_theme,
+                MAX(canonical_theme) FILTER (WHERE theme_rank = 2)
+                    AS secondary_theme,
+                STRING_AGG(
+                    canonical_theme,
+                    ', '
+                    ORDER BY hit_count DESC, canonical_theme
+                ) AS related_themes,
+                COUNT(*)::integer AS theme_count,
+                SUM(hit_count)::integer AS total_hit_count,
+                MIN(first_seen_date) AS first_seen_date,
+                MAX(last_seen_date) AS last_seen_date,
+                SUM(hit_count)::numeric(20, 2) AS profile_score
+            FROM ranked
+            GROUP BY stock_name
+        )
+        INSERT INTO stock_profile (
+            stock_name,
+            primary_theme,
+            secondary_theme,
+            related_themes,
+            theme_count,
+            total_hit_count,
+            first_seen_date,
+            last_seen_date,
+            profile_score
+        )
+        SELECT
+            stock_name,
+            primary_theme,
+            secondary_theme,
+            related_themes,
+            theme_count,
+            total_hit_count,
+            first_seen_date,
+            last_seen_date,
+            profile_score
+        FROM aggregated
+        ON CONFLICT (stock_name)
+        DO UPDATE SET
+            primary_theme = EXCLUDED.primary_theme,
+            secondary_theme = EXCLUDED.secondary_theme,
+            related_themes = EXCLUDED.related_themes,
+            theme_count = EXCLUDED.theme_count,
+            total_hit_count = EXCLUDED.total_hit_count,
+            first_seen_date = EXCLUDED.first_seen_date,
+            last_seen_date = EXCLUDED.last_seen_date,
+            profile_score = EXCLUDED.profile_score,
+            updated_at = NOW()
+        RETURNING id
+    """
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(upsert_sql)
+            stock_profile_count = len(cursor.fetchall())
+        connection.commit()
+
+    return {"stock_profile_count": stock_profile_count}

@@ -176,6 +176,21 @@ CREATE TABLE IF NOT EXISTS stock_canonical_theme_map (
     UNIQUE (stock_name, canonical_theme)
 );
 
+CREATE TABLE IF NOT EXISTS stock_profile (
+    id BIGSERIAL PRIMARY KEY,
+    stock_name TEXT NOT NULL UNIQUE,
+    primary_theme TEXT,
+    secondary_theme TEXT,
+    related_themes TEXT,
+    theme_count INTEGER NOT NULL DEFAULT 0,
+    total_hit_count INTEGER NOT NULL DEFAULT 0,
+    first_seen_date DATE,
+    last_seen_date DATE,
+    profile_score NUMERIC(20, 2),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_daily_price_trade_date
     ON daily_price (trade_date);
 
@@ -238,3 +253,9 @@ CREATE INDEX IF NOT EXISTS idx_stock_canonical_theme_map_stock_name
 
 CREATE INDEX IF NOT EXISTS idx_stock_canonical_theme_map_hit_count
     ON stock_canonical_theme_map (hit_count DESC);
+
+CREATE INDEX IF NOT EXISTS idx_stock_profile_stock_name
+    ON stock_profile (stock_name);
+
+CREATE INDEX IF NOT EXISTS idx_stock_profile_total_hit_count
+    ON stock_profile (total_hit_count DESC);
