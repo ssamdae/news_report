@@ -1,5 +1,7 @@
 import argparse
+import csv
 from datetime import date, datetime
+from pathlib import Path
 
 from database.db import test_connection
 
@@ -78,9 +80,10 @@ def collect_news(stock_code: str) -> None:
 
 def ingest_pdf(pdf_dir: str, limit: int | None = None) -> None:
     from collector.pdf_ingestor import (
-        detect_pdf_format_type,
+        detect_format_type,
+        extract_pdf_text,
         find_pdf_files,
-        parse_signal_evening_pdfs,
+        parse_signal_evening_text,
     )
     from database.pdf_repository import save_pdf_signal_items
 
@@ -89,16 +92,95 @@ def ingest_pdf(pdf_dir: str, limit: int | None = None) -> None:
         print(f"PDF 파일을 찾을 수 없습니다: {pdf_dir}")
         return
 
-    print(f"PDF ingest 시작: {len(pdf_files)}개")
+    summary_rows = []
     for pdf_file in pdf_files:
-        format_type = detect_pdf_format_type(pdf_file)
-        print(f"- {pdf_file.name} ({format_type})")
+        row = {
+            "pdf_file_name": pdf_file.name,
+            "format_type": "unknown",
+            "parsed_count": 0,
+            "saved_count": 0,
+            "status": "zero_parsed",
+            "error_message": "",
+        }
 
-    signal_df = parse_signal_evening_pdfs(pdf_dir=pdf_dir, limit=limit)
-    print(f"PDF 파싱 완료: {len(signal_df)}건")
+        try:
+            text = extract_pdf_text(pdf_file)
+            format_type = detect_format_type(text)
+            signal_df = parse_signal_evening_text(
+                text,
+                pdf_file.name,
+                format_type=format_type,
+            )
+            parsed_count = len(signal_df)
+            row["format_type"] = format_type
+            row["parsed_count"] = parsed_count
 
-    saved_count = save_pdf_signal_items(signal_df)
-    print(f"pdf_signal_item 저장 완료: {saved_count}건")
+            saved_count = save_pdf_signal_items(signal_df)
+            row["saved_count"] = saved_count
+            row["status"] = "success" if parsed_count > 0 else "zero_parsed"
+        except Exception as error:
+            row["status"] = "error"
+            row["error_message"] = str(error)
+
+        summary_rows.append(row)
+
+    _write_pdf_ingest_summary(summary_rows)
+    _print_pdf_ingest_summary(summary_rows)
+
+
+def _write_pdf_ingest_summary(summary_rows: list[dict]) -> None:
+    output_dir = Path("data/pdf_inspect")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    summary_path = output_dir / "ingest_summary.csv"
+    fieldnames = [
+        "pdf_file_name",
+        "format_type",
+        "parsed_count",
+        "saved_count",
+        "status",
+        "error_message",
+    ]
+    with summary_path.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(summary_rows)
+
+    zero_parse_files = [
+        row["pdf_file_name"]
+        for row in summary_rows
+        if row["status"] == "zero_parsed"
+    ]
+    (output_dir / "zero_parse_files.txt").write_text(
+        "\n".join(zero_parse_files),
+        encoding="utf-8",
+    )
+
+    error_files = [
+        row["pdf_file_name"]
+        for row in summary_rows
+        if row["status"] == "error"
+    ]
+    (output_dir / "error_files.txt").write_text(
+        "\n".join(error_files),
+        encoding="utf-8",
+    )
+
+
+def _print_pdf_ingest_summary(summary_rows: list[dict]) -> None:
+    status_counts = {"success": 0, "zero_parsed": 0, "error": 0}
+    for row in summary_rows:
+        status_counts[row["status"]] += 1
+
+    parsed_rows = sum(int(row["parsed_count"]) for row in summary_rows)
+    saved_rows = sum(int(row["saved_count"]) for row in summary_rows)
+
+    print(f"총 PDF: {len(summary_rows)}")
+    print(f"success: {status_counts['success']}")
+    print(f"zero_parsed: {status_counts['zero_parsed']}")
+    print(f"error: {status_counts['error']}")
+    print(f"parsed rows: {parsed_rows}")
+    print(f"saved rows: {saved_rows}")
 
 
 def inspect_pdf_format_command(pdf_dir: str, inspect_pages: int) -> None:
