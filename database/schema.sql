@@ -98,11 +98,26 @@ CREATE TABLE IF NOT EXISTS theme_master (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS canonical_theme_master (
+    id BIGSERIAL PRIMARY KEY,
+    canonical_name TEXT NOT NULL UNIQUE,
+    category_name TEXT,
+    description TEXT,
+    priority INTEGER NOT NULL DEFAULT 100,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS theme_alias (
     id BIGSERIAL PRIMARY KEY,
     alias_name TEXT NOT NULL UNIQUE,
     theme_id BIGINT REFERENCES theme_master(id),
     canonical_name TEXT NOT NULL,
+    canonical_theme_id BIGINT REFERENCES canonical_theme_master(id),
+    match_type TEXT NOT NULL DEFAULT 'manual',
+    memo TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -111,6 +126,18 @@ ALTER TABLE theme_alias
 
 ALTER TABLE theme_alias
     ADD COLUMN IF NOT EXISTS canonical_name TEXT;
+
+ALTER TABLE theme_alias
+    ADD COLUMN IF NOT EXISTS canonical_theme_id BIGINT REFERENCES canonical_theme_master(id);
+
+ALTER TABLE theme_alias
+    ADD COLUMN IF NOT EXISTS match_type TEXT NOT NULL DEFAULT 'manual';
+
+ALTER TABLE theme_alias
+    ADD COLUMN IF NOT EXISTS memo TEXT;
+
+ALTER TABLE theme_alias
+    ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
 
 UPDATE theme_alias
 SET canonical_name = alias_name
@@ -184,6 +211,15 @@ CREATE INDEX IF NOT EXISTS idx_theme_alias_theme_id
 
 CREATE INDEX IF NOT EXISTS idx_theme_alias_canonical_name
     ON theme_alias (canonical_name);
+
+CREATE INDEX IF NOT EXISTS idx_theme_alias_canonical_theme_id
+    ON theme_alias (canonical_theme_id);
+
+CREATE INDEX IF NOT EXISTS idx_theme_alias_is_active
+    ON theme_alias (is_active);
+
+CREATE INDEX IF NOT EXISTS idx_canonical_theme_master_is_active
+    ON canonical_theme_master (is_active);
 
 CREATE INDEX IF NOT EXISTS idx_stock_theme_map_theme_id
     ON stock_theme_map (theme_id);

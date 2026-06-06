@@ -215,6 +215,17 @@ def seed_theme_alias() -> None:
     result = seed_theme_aliases()
     print(f"canonical theme seed 완료: {result['canonical_theme_count']}건")
     print(f"theme_alias seed 완료: {result['alias_count']}건")
+    print(
+        "미등록 canonical theme: "
+        f"{result['missing_canonical_theme_count']}건"
+    )
+
+
+def seed_canonical_theme() -> None:
+    from database.theme_repository import seed_canonical_themes
+
+    result = seed_canonical_themes()
+    print(f"canonical_theme_master seed 완료: {result['canonical_theme_count']}건")
 
 
 def build_canonical_theme_map() -> None:
@@ -279,6 +290,10 @@ def main() -> None:
 
     if args.command == "seed-theme-alias":
         seed_theme_alias()
+        return
+
+    if args.command == "seed-canonical-theme":
+        seed_canonical_theme()
         return
 
     if args.command == "build-canonical-theme-map":
