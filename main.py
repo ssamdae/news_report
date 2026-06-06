@@ -209,6 +209,24 @@ def build_theme_map() -> None:
     print(f"stock_theme_map upsert 완료: {result['stock_theme_map_count']}건")
 
 
+def seed_theme_alias() -> None:
+    from database.theme_repository import seed_theme_aliases
+
+    result = seed_theme_aliases()
+    print(f"canonical theme seed 완료: {result['canonical_theme_count']}건")
+    print(f"theme_alias seed 완료: {result['alias_count']}건")
+
+
+def build_canonical_theme_map() -> None:
+    from database.theme_repository import build_stock_canonical_theme_map
+
+    result = build_stock_canonical_theme_map()
+    print(
+        "stock_canonical_theme_map upsert 완료: "
+        f"{result['stock_canonical_theme_map_count']}건"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stock research system")
     parser.add_argument("command", nargs="?", help="Command to run")
@@ -257,6 +275,14 @@ def main() -> None:
 
     if args.command == "build-theme-map":
         build_theme_map()
+        return
+
+    if args.command == "seed-theme-alias":
+        seed_theme_alias()
+        return
+
+    if args.command == "build-canonical-theme-map":
+        build_canonical_theme_map()
         return
 
     print("Stock research system scaffold")

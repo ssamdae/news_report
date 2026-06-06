@@ -101,9 +101,23 @@ CREATE TABLE IF NOT EXISTS theme_master (
 CREATE TABLE IF NOT EXISTS theme_alias (
     id BIGSERIAL PRIMARY KEY,
     alias_name TEXT NOT NULL UNIQUE,
-    theme_id BIGINT NOT NULL REFERENCES theme_master(id),
+    theme_id BIGINT REFERENCES theme_master(id),
+    canonical_name TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE theme_alias
+    ALTER COLUMN theme_id DROP NOT NULL;
+
+ALTER TABLE theme_alias
+    ADD COLUMN IF NOT EXISTS canonical_name TEXT;
+
+UPDATE theme_alias
+SET canonical_name = alias_name
+WHERE canonical_name IS NULL;
+
+ALTER TABLE theme_alias
+    ALTER COLUMN canonical_name SET NOT NULL;
 
 CREATE TABLE IF NOT EXISTS stock_theme_map (
     id BIGSERIAL PRIMARY KEY,
@@ -118,6 +132,21 @@ CREATE TABLE IF NOT EXISTS stock_theme_map (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (stock_name, theme_id)
+);
+
+CREATE TABLE IF NOT EXISTS stock_canonical_theme_map (
+    id BIGSERIAL PRIMARY KEY,
+    stock_name TEXT NOT NULL,
+    canonical_theme TEXT NOT NULL,
+    first_seen_date DATE,
+    last_seen_date DATE,
+    hit_count INTEGER NOT NULL DEFAULT 0,
+    avg_change_rate NUMERIC(10, 2),
+    max_change_rate NUMERIC(10, 2),
+    total_trading_value NUMERIC(24, 2),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (stock_name, canonical_theme)
 );
 
 CREATE INDEX IF NOT EXISTS idx_daily_price_trade_date
@@ -153,6 +182,9 @@ CREATE INDEX IF NOT EXISTS idx_pdf_signal_item_stock_name
 CREATE INDEX IF NOT EXISTS idx_theme_alias_theme_id
     ON theme_alias (theme_id);
 
+CREATE INDEX IF NOT EXISTS idx_theme_alias_canonical_name
+    ON theme_alias (canonical_name);
+
 CREATE INDEX IF NOT EXISTS idx_stock_theme_map_theme_id
     ON stock_theme_map (theme_id);
 
@@ -161,3 +193,12 @@ CREATE INDEX IF NOT EXISTS idx_stock_theme_map_stock_name
 
 CREATE INDEX IF NOT EXISTS idx_stock_theme_map_hit_count
     ON stock_theme_map (hit_count DESC);
+
+CREATE INDEX IF NOT EXISTS idx_stock_canonical_theme_map_canonical_theme
+    ON stock_canonical_theme_map (canonical_theme);
+
+CREATE INDEX IF NOT EXISTS idx_stock_canonical_theme_map_stock_name
+    ON stock_canonical_theme_map (stock_name);
+
+CREATE INDEX IF NOT EXISTS idx_stock_canonical_theme_map_hit_count
+    ON stock_canonical_theme_map (hit_count DESC);
