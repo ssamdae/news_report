@@ -245,6 +245,18 @@ def build_stock_profile() -> None:
     print(f"stock_profile upsert 완료: {result['stock_profile_count']}건")
 
 
+def build_stock_knowledge() -> None:
+    from database.theme_repository import build_stock_knowledge_graph
+
+    result = build_stock_knowledge_graph()
+    print(f"THEME node upsert 완료: {result['theme_node_count']}건")
+    print(f"KEYWORD node upsert 완료: {result['keyword_node_count']}건")
+    print(
+        "stock_knowledge_graph upsert 완료: "
+        f"{result['stock_knowledge_graph_count']}건"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stock research system")
     parser.add_argument("command", nargs="?", help="Command to run")
@@ -309,6 +321,10 @@ def main() -> None:
 
     if args.command == "build-stock-profile":
         build_stock_profile()
+        return
+
+    if args.command == "build-stock-knowledge":
+        build_stock_knowledge()
         return
 
     print("Stock research system scaffold")

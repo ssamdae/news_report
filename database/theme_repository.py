@@ -550,3 +550,142 @@ def build_stock_profiles() -> dict[str, int]:
         connection.commit()
 
     return {"stock_profile_count": stock_profile_count}
+
+
+def build_stock_knowledge_graph() -> dict[str, int]:
+    upsert_theme_sql = """
+        WITH theme_nodes AS (
+            SELECT
+                stock_name,
+                'THEME' AS node_type,
+                primary_theme AS node_value,
+                'PRIMARY_THEME' AS relation_type,
+                'stock_profile' AS source,
+                100::numeric(10, 2) AS score
+            FROM stock_profile
+            WHERE primary_theme IS NOT NULL
+                AND TRIM(primary_theme) <> ''
+
+            UNION ALL
+
+            SELECT
+                stock_name,
+                'THEME' AS node_type,
+                secondary_theme AS node_value,
+                'SECONDARY_THEME' AS relation_type,
+                'stock_profile' AS source,
+                70::numeric(10, 2) AS score
+            FROM stock_profile
+            WHERE secondary_theme IS NOT NULL
+                AND TRIM(secondary_theme) <> ''
+
+            UNION ALL
+
+            SELECT
+                p.stock_name,
+                'THEME' AS node_type,
+                TRIM(theme_value) AS node_value,
+                'RELATED_THEME' AS relation_type,
+                'stock_profile' AS source,
+                50::numeric(10, 2) AS score
+            FROM stock_profile p
+            CROSS JOIN LATERAL regexp_split_to_table(
+                COALESCE(p.related_themes, ''),
+                '\\s*,\\s*'
+            ) AS theme_value
+            WHERE TRIM(theme_value) <> ''
+        )
+        INSERT INTO stock_knowledge_graph (
+            stock_name,
+            node_type,
+            node_value,
+            relation_type,
+            source,
+            score
+        )
+        SELECT
+            stock_name,
+            node_type,
+            node_value,
+            relation_type,
+            source,
+            score
+        FROM theme_nodes
+        ON CONFLICT (stock_name, node_type, node_value, relation_type)
+        DO UPDATE SET
+            source = EXCLUDED.source,
+            score = EXCLUDED.score,
+            updated_at = NOW()
+        RETURNING id
+    """
+
+    upsert_keyword_sql = """
+        INSERT INTO stock_knowledge_graph (
+            stock_name,
+            node_type,
+            node_value,
+            relation_type,
+            source,
+            score
+        )
+        SELECT
+            m.stock_name,
+            'KEYWORD' AS node_type,
+            TRIM(k.keyword) AS node_value,
+            'STOCK_KEYWORD' AS relation_type,
+            'stock_keyword_map' AS source,
+            80::numeric(10, 2) AS score
+        FROM stock_keyword_map k
+        JOIN stock_master m
+            ON m.stock_code = k.stock_code
+        WHERE k.is_active = TRUE
+            AND TRIM(k.keyword) <> ''
+            AND TRIM(m.stock_name) <> ''
+        ON CONFLICT (stock_name, node_type, node_value, relation_type)
+        DO UPDATE SET
+            source = EXCLUDED.source,
+            score = EXCLUDED.score,
+            updated_at = NOW()
+        RETURNING id
+    """
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(upsert_theme_sql)
+            theme_node_count = len(cursor.fetchall())
+
+            cursor.execute(upsert_keyword_sql)
+            keyword_node_count = len(cursor.fetchall())
+
+        connection.commit()
+
+    return {
+        "theme_node_count": theme_node_count,
+        "keyword_node_count": keyword_node_count,
+        "stock_knowledge_graph_count": theme_node_count + keyword_node_count,
+    }
+
+
+def get_expanded_search_terms(stock_name: str, limit: int = 20) -> list[str]:
+    query = """
+        SELECT node_value
+        FROM stock_knowledge_graph
+        WHERE stock_name = %(stock_name)s
+        ORDER BY score DESC, node_type, node_value
+        LIMIT %(limit)s
+    """
+
+    terms = [stock_name]
+    seen = {stock_name}
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query, {"stock_name": stock_name, "limit": limit})
+            for row in cursor.fetchall():
+                term = row[0]
+                if not term or term in seen:
+                    continue
+                seen.add(term)
+                terms.append(term)
+
+    return terms
