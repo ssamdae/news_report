@@ -181,14 +181,28 @@ def _is_common_stock_name(stock_name: str) -> bool:
     name = stock_name.strip()
     if not name:
         return False
-    if "스팩" in name or "기업인수목적" in name:
+    if "스팩" in name or "SPAC" in name.upper() or "기업인수목적" in name:
         return False
     if re.search(r"(\d+우[BC]?|우[BC]?|우)$", name):
         return False
     return True
 
 
-def fetch_krx_stock_universe(base_date: date | None = None) -> pd.DataFrame:
+def _normalize_universe_frame(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=["stock_code", "stock_name", "market"])
+
+    universe = df[["stock_code", "stock_name", "market"]].dropna().copy()
+    universe["stock_code"] = universe["stock_code"].apply(_normalize_stock_code)
+    universe["stock_name"] = universe["stock_name"].astype(str).str.strip()
+    universe["market"] = universe["market"].astype(str).str.strip().str.upper()
+    universe = universe[universe["stock_code"].str.fullmatch(r"\d{6}")]
+    universe = universe[universe["stock_name"].map(_is_common_stock_name)]
+    universe = universe[universe["market"].isin(["KOSPI", "KOSDAQ"])]
+    return universe.drop_duplicates(subset=["stock_code"]).reset_index(drop=True)
+
+
+def fetch_universe_from_pykrx(base_date: date | None = None) -> pd.DataFrame:
     try:
         from pykrx import stock
     except ModuleNotFoundError as exc:
@@ -200,18 +214,10 @@ def fetch_krx_stock_universe(base_date: date | None = None) -> pd.DataFrame:
     rows: list[dict[str, str]] = []
 
     for market in ("KOSPI", "KOSDAQ"):
-        try:
-            tickers = stock.get_market_ticker_list(target_date, market=market)
-        except Exception as exc:
-            print(f"[WARN] pykrx ticker fetch failed for {market}: {exc}")
-            continue
+        tickers = stock.get_market_ticker_list(target_date, market=market)
 
         for ticker in tickers:
-            try:
-                stock_name = stock.get_market_ticker_name(ticker)
-            except Exception as exc:
-                print(f"[WARN] pykrx ticker name fetch failed for {ticker}: {exc}")
-                continue
+            stock_name = stock.get_market_ticker_name(ticker)
 
             if not _is_common_stock_name(stock_name):
                 continue
@@ -224,11 +230,75 @@ def fetch_krx_stock_universe(base_date: date | None = None) -> pd.DataFrame:
                 }
             )
 
-    if not rows:
-        raise RuntimeError("No KRX stock universe rows were fetched.")
+    universe = _normalize_universe_frame(pd.DataFrame(rows))
+    if universe.empty:
+        raise RuntimeError("pykrx returned no valid KOSPI/KOSDAQ stock rows.")
+    return universe
 
-    universe = pd.DataFrame(rows)
-    return universe.drop_duplicates(subset=["stock_code"]).reset_index(drop=True)
+
+def fetch_universe_from_fdr() -> pd.DataFrame:
+    try:
+        import FinanceDataReader as fdr
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "FinanceDataReader is required. Install dependencies with pip install -r requirements.txt"
+        ) from exc
+
+    frames: list[pd.DataFrame] = []
+    for market in ("KOSPI", "KOSDAQ"):
+        listing = fdr.StockListing(market)
+        required_columns = {"Code", "Name"}
+        missing_columns = required_columns - set(listing.columns)
+        if missing_columns:
+            raise RuntimeError(
+                f"FinanceDataReader {market} listing missing columns: "
+                + ", ".join(sorted(missing_columns))
+            )
+
+        frame = listing.rename(
+            columns={
+                "Code": "stock_code",
+                "Name": "stock_name",
+            }
+        ).copy()
+        frame["market"] = market
+        frames.append(frame[["stock_code", "stock_name", "market"]])
+
+    universe = _normalize_universe_frame(pd.concat(frames, ignore_index=True))
+    if universe.empty:
+        raise RuntimeError("FinanceDataReader returned no valid KOSPI/KOSDAQ stock rows.")
+    return universe
+
+
+def fetch_universe_from_csv(
+    csv_path: str | os.PathLike[str] | None = None,
+) -> pd.DataFrame:
+    return load_stock_master_from_csv(csv_path)
+
+
+def fetch_krx_stock_universe(base_date: date | None = None) -> pd.DataFrame:
+    fetchers = [
+        ("pykrx", lambda: fetch_universe_from_pykrx(base_date)),
+        ("FinanceDataReader", fetch_universe_from_fdr),
+        ("CSV", fetch_universe_from_csv),
+    ]
+
+    errors: list[str] = []
+    for source_name, fetcher in fetchers:
+        try:
+            universe = fetcher()
+        except Exception as exc:
+            message = f"{source_name} 실패: {exc}"
+            print(message)
+            errors.append(message)
+            continue
+
+        print(f"{source_name} 성공: {len(universe)}건")
+        return universe
+
+    raise RuntimeError(
+        "모든 stock universe 수집 방식이 실패했습니다. " + " | ".join(errors)
+    )
 
 
 def refresh_stock_master() -> pd.DataFrame:

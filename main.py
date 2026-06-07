@@ -373,7 +373,7 @@ def sync_stock_master_command() -> None:
     saved_count = upsert_stock_master_bulk(universe)
     market_counts = universe.groupby("market")["stock_code"].count().to_dict()
 
-    print(f"KRX universe 수집 완료: {len(universe)}건")
+    print(f"최종 수집 종목 수: {len(universe)}건")
     for market in ("KOSPI", "KOSDAQ"):
         print(f"{market}: {market_counts.get(market, 0)}건")
     print(f"stock_master upsert 완료: {saved_count}건")
