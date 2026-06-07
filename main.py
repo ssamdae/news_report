@@ -14,7 +14,7 @@ def _parse_date(value: str | None) -> date:
     return datetime.strptime(value, "%Y-%m-%d").date()
 
 
-def run(target_date: date) -> None:
+def run(target_date: date, limit_stocks: int | None = None) -> None:
     from collector.news_collector import collect_news_for_signals
     from collector.stock_collector import collect_daily_stocks
     from database.news_repository import load_active_stock_keywords, save_news_articles
@@ -23,7 +23,9 @@ def run(target_date: date) -> None:
     from filter.signal_filter import filter_500eok_signal
 
     print(f"주가 수집 시작: {target_date.isoformat()}")
-    stock_df = collect_daily_stocks(target_date)
+    if limit_stocks is not None:
+        print(f"주가 수집 제한: 상위 {limit_stocks}개 종목")
+    stock_df = collect_daily_stocks(target_date, limit_stocks=limit_stocks)
     print(f"주가 수집 완료: {len(stock_df)}건")
 
     signal_df = filter_500eok_signal(stock_df)
@@ -356,6 +358,27 @@ def seed_stock_keywords() -> None:
         print("stock_master 미등록 종목: " + ", ".join(result["missing_stocks"]))
 
 
+def sync_stock_master_command() -> None:
+    from collector.stock_collector import fetch_krx_stock_universe
+    from database.stock_repository import upsert_stock_master_bulk
+
+    print("KRX 전체 종목 universe 수집 시작")
+    try:
+        universe = fetch_krx_stock_universe()
+    except Exception as error:
+        print(f"KRX universe 수집 실패: {error}")
+        print("stock_master를 변경하지 않았습니다.")
+        return
+
+    saved_count = upsert_stock_master_bulk(universe)
+    market_counts = universe.groupby("market")["stock_code"].count().to_dict()
+
+    print(f"KRX universe 수집 완료: {len(universe)}건")
+    for market in ("KOSPI", "KOSDAQ"):
+        print(f"{market}: {market_counts.get(market, 0)}건")
+    print(f"stock_master upsert 완료: {saved_count}건")
+
+
 def build_search_terms() -> None:
     from database.theme_repository import run_build_search_terms
 
@@ -524,6 +547,11 @@ def main() -> None:
         default=5,
         help="Maximum relevant news rows per stock for analyze-daily-themes",
     )
+    parser.add_argument(
+        "--limit-stocks",
+        type=int,
+        help="Maximum stock count for run command",
+    )
     args = parser.parse_args()
 
     if args.command == "test-db":
@@ -532,7 +560,11 @@ def main() -> None:
         return
 
     if args.command == "run":
-        run(_parse_date(args.date))
+        run(_parse_date(args.date), limit_stocks=args.limit_stocks)
+        return
+
+    if args.command == "sync-stock-master":
+        sync_stock_master_command()
         return
 
     if args.command == "collect-news":

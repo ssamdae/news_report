@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import os
+import re
 import time
 from datetime import date, datetime
 from html.parser import HTMLParser
@@ -151,14 +154,85 @@ def load_stock_master_from_csv(csv_path: str | os.PathLike[str] | None = None) -
 
 
 def load_stock_master(csv_path: str | os.PathLike[str] | None = None) -> pd.DataFrame:
-    return load_stock_master_from_csv(csv_path)
+    if csv_path or os.getenv("STOCK_MASTER_CSV"):
+        return load_stock_master_from_csv(csv_path)
+
+    try:
+        from database.stock_repository import load_active_stock_master
+
+        master = load_active_stock_master()
+    except Exception as exc:
+        print(f"[WARN] DB stock_master load failed. Falling back to CSV: {exc}")
+        return load_stock_master_from_csv(csv_path)
+
+    if master.empty:
+        print("[WARN] DB stock_master is empty. Falling back to CSV.")
+        return load_stock_master_from_csv(csv_path)
+
+    master = master[["stock_code", "stock_name", "market"]].dropna().copy()
+    master["stock_code"] = master["stock_code"].apply(_normalize_stock_code)
+    master["stock_name"] = master["stock_name"].astype(str).str.strip()
+    master["market"] = master["market"].astype(str).str.strip().str.upper()
+    master = master.drop_duplicates(subset=["stock_code"])
+    return master.reset_index(drop=True)
+
+
+def _is_common_stock_name(stock_name: str) -> bool:
+    name = stock_name.strip()
+    if not name:
+        return False
+    if "스팩" in name or "기업인수목적" in name:
+        return False
+    if re.search(r"(\d+우[BC]?|우[BC]?|우)$", name):
+        return False
+    return True
+
+
+def fetch_krx_stock_universe(base_date: date | None = None) -> pd.DataFrame:
+    try:
+        from pykrx import stock
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "pykrx is required. Install dependencies with pip install -r requirements.txt"
+        ) from exc
+
+    target_date = (base_date or date.today()).strftime("%Y%m%d")
+    rows: list[dict[str, str]] = []
+
+    for market in ("KOSPI", "KOSDAQ"):
+        try:
+            tickers = stock.get_market_ticker_list(target_date, market=market)
+        except Exception as exc:
+            print(f"[WARN] pykrx ticker fetch failed for {market}: {exc}")
+            continue
+
+        for ticker in tickers:
+            try:
+                stock_name = stock.get_market_ticker_name(ticker)
+            except Exception as exc:
+                print(f"[WARN] pykrx ticker name fetch failed for {ticker}: {exc}")
+                continue
+
+            if not _is_common_stock_name(stock_name):
+                continue
+
+            rows.append(
+                {
+                    "stock_code": _normalize_stock_code(ticker),
+                    "stock_name": stock_name.strip(),
+                    "market": market,
+                }
+            )
+
+    if not rows:
+        raise RuntimeError("No KRX stock universe rows were fetched.")
+
+    universe = pd.DataFrame(rows)
+    return universe.drop_duplicates(subset=["stock_code"]).reset_index(drop=True)
 
 
 def refresh_stock_master() -> pd.DataFrame:
-    raise NotImplementedError(
-        "Automatic stock master refresh is not implemented yet. "
-        "Provide data/stock_master.csv before running the collector."
-    )
+    return fetch_krx_stock_universe()
 
 
 def _fetch_naver_daily_page(
@@ -268,16 +342,25 @@ def get_daily_stock_price(
             session.close()
 
 
-def collect_daily_stocks(target_date: str | date) -> pd.DataFrame:
+def collect_daily_stocks(
+    target_date: str | date,
+    limit_stocks: int | None = None,
+) -> pd.DataFrame:
     normalized_date = _normalize_date(target_date)
     master = load_stock_master()
+    if limit_stocks is not None:
+        master = master.head(limit_stocks).copy()
+
     sleep_seconds = _get_sleep_seconds()
     session = _build_session()
     frames: list[pd.DataFrame] = []
     errors: list[str] = []
+    total_count = len(master)
+
+    print(f"주가 수집 대상 종목 수: {total_count}건")
 
     try:
-        for row in master.to_dict("records"):
+        for index, row in enumerate(master.to_dict("records"), start=1):
             stock_code = _normalize_stock_code(row["stock_code"])
             stock_name = str(row["stock_name"])
             market = str(row["market"])
@@ -297,9 +380,20 @@ def collect_daily_stocks(target_date: str | date) -> pd.DataFrame:
                 print(f"[WARN] {message}")
                 errors.append(message)
 
+            if index % 100 == 0:
+                print(
+                    f"주가 수집 진행: {index}/{total_count} "
+                    f"(성공 {len(frames)}건, 실패 {len(errors)}건)"
+                )
+
             time.sleep(sleep_seconds)
     finally:
         session.close()
+
+    print(
+        f"주가 수집 결과: 대상 {total_count}건, "
+        f"성공 {len(frames)}건, 실패 {len(errors)}건"
+    )
 
     if not frames:
         print(

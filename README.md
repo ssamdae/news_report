@@ -49,13 +49,25 @@ export STOCK_MASTER_CSV=/path/to/stock_master.csv
 
 ## 주가 수집 실행
 
+먼저 KOSPI/KOSDAQ 전체 상장 종목을 `stock_master`에 동기화합니다.
+
+```bash
+python3.12 main.py sync-stock-master
+```
+
 ```bash
 python3.12 main.py run --date 2026-06-04
 ```
 
+테스트 목적으로 일부 종목만 수집하려면 `--limit-stocks` 옵션을 사용합니다.
+
+```bash
+python3.12 main.py run --date 2026-06-04 --limit-stocks 100
+```
+
 수집 흐름:
 
-1. 종목 마스터 로드
+1. DB `stock_master`에서 종목 마스터 로드
 2. 네이버 금융에서 종목별 일봉 수집
 3. 전일 종가 계산
 4. 500억봉 필터 적용

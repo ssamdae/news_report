@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import pandas as pd
 
 from database.db import get_connection
@@ -44,6 +46,24 @@ def load_stock_master_by_code(stock_code: str) -> dict | None:
     }
 
 
+def load_active_stock_master(limit: int | None = None) -> pd.DataFrame:
+    limit_clause = "LIMIT %(limit)s" if limit is not None else ""
+    sql = f"""
+        SELECT
+            stock_code,
+            stock_name,
+            market
+        FROM stock_master
+        WHERE is_active = TRUE
+        ORDER BY market, stock_code
+        {limit_clause}
+    """
+    params = {"limit": limit} if limit is not None else None
+
+    with get_connection() as connection:
+        return pd.read_sql_query(sql, connection, params=params)
+
+
 def save_stock_master(df: pd.DataFrame) -> int:
     if df.empty:
         return 0
@@ -75,6 +95,10 @@ def save_stock_master(df: pd.DataFrame) -> int:
         connection.commit()
 
     return len(rows)
+
+
+def upsert_stock_master_bulk(df: pd.DataFrame) -> int:
+    return save_stock_master(df)
 
 
 def save_daily_prices(df: pd.DataFrame) -> int:
