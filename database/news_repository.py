@@ -112,6 +112,23 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
+def _to_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+    return str(value)
+
+
+def _to_decimal_score(value: Any, default: int | float | str = 0) -> Decimal:
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return Decimal(str(default))
+
+
 def calculate_news_relevance(
     stock_name: str | None,
     title: str | None,
@@ -1202,10 +1219,12 @@ def build_daily_theme_analysis_prompt(
 - 과도한 가격 전망이나 수익률 전망을 피하세요.
 
 반드시 아래 JSON 형식으로만 답하세요. JSON 앞뒤에 설명, 마크다운, 코드블록을 붙이지 마세요.
+confidence_score를 제외한 모든 필드는 배열이나 객체가 아니라 문자열로 반환하세요.
+theme_rankings도 배열이 아니라 "1위 반도체: ...\n2위 AI/로봇: ..." 형태의 문자열이어야 합니다.
 {{
   "market_summary": "...",
   "strong_themes": "...",
-  "theme_rankings": "...",
+  "theme_rankings": "1위 반도체: ...\n2위 AI/로봇: ...",
   "key_issues": "...",
   "leading_stocks": "...",
   "risk_points": "...",
@@ -1282,11 +1301,14 @@ def normalize_daily_theme_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
     normalized = {
         column: analysis.get(column) for column in DAILY_THEME_ANALYSIS_COLUMNS
     }
-    try:
-        confidence_score = float(normalized.get("confidence_score") or 0)
-    except (TypeError, ValueError):
-        confidence_score = 0
-    normalized["confidence_score"] = max(0, min(100, confidence_score))
+
+    for column in DAILY_THEME_ANALYSIS_COLUMNS:
+        if column != "confidence_score":
+            normalized[column] = _to_text(normalized.get(column))
+
+    confidence_score = _to_decimal_score(normalized.get("confidence_score"))
+    confidence_score = max(Decimal("0"), min(Decimal("100"), confidence_score))
+    normalized["confidence_score"] = confidence_score
     return normalized
 
 
