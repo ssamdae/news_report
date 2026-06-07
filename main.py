@@ -471,6 +471,36 @@ def analyze_signals_command(report_date: date, limit: int, mock: bool) -> None:
             print(f"- {row['stock_name']}: {row['error']}")
 
 
+def analyze_signal_stocks_command(
+    report_date: date,
+    limit_news: int,
+    mock: bool,
+) -> None:
+    from database.news_repository import analyze_signal_event_stocks
+
+    result = analyze_signal_event_stocks(
+        report_date=report_date,
+        limit_news=limit_news,
+        mock=mock,
+    )
+
+    print(f"분석 기준일: {result['report_date']}")
+    print(f"분석 대상 종목 수: {result['target_count']}건")
+    print(f"성공: {result['success_count']}건")
+    print(f"스킵: {result['skip_count']}건")
+    print(f"실패: {result['error_count']}건")
+
+    if result["skipped"]:
+        print("스킵 종목 목록:")
+        for row in result["skipped"]:
+            print(f"- {row['stock_name']}: {row['reason']}")
+
+    if result["errors"]:
+        print("실패 종목 목록:")
+        for row in result["errors"]:
+            print(f"- {row['stock_name']}: {row['error']}")
+
+
 def analyze_daily_themes_command(
     report_date: date,
     limit_news_per_stock: int,
@@ -566,6 +596,12 @@ def main() -> None:
         type=int,
         help="Maximum stock count for run command",
     )
+    parser.add_argument(
+        "--limit-news",
+        type=int,
+        default=20,
+        help="Maximum relevant news rows per stock for analyze-signal-stocks",
+    )
     args = parser.parse_args()
 
     if args.command == "test-db":
@@ -653,6 +689,16 @@ def main() -> None:
         analyze_signals_command(
             report_date=_parse_date(args.date),
             limit=args.limit or 20,
+            mock=args.mock,
+        )
+        return
+
+    if args.command == "analyze-signal-stocks":
+        if not args.date:
+            parser.error("analyze-signal-stocks requires --date")
+        analyze_signal_stocks_command(
+            report_date=_parse_date(args.date),
+            limit_news=args.limit_news,
             mock=args.mock,
         )
         return

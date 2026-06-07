@@ -43,6 +43,16 @@ def _short_link(value: Any, max_length: int = 80) -> str:
     return text[: max_length - 3] + "..."
 
 
+def _link_paragraph(url: Any, label: str, style: Any) -> Any:
+    from html import escape
+
+    from reportlab.platypus import Paragraph
+
+    href = escape(_text(url), quote=True)
+    text = escape(label)
+    return Paragraph(f'<link href="{href}" color="blue">{text}</link>', style)
+
+
 def _format_number(value: Any) -> str:
     if value is None:
         return "-"
@@ -179,6 +189,7 @@ def _load_stock_analyses(report_date: date) -> list[dict[str, Any]]:
             a.risk_points,
             a.theme_points,
             a.tomorrow_checkpoints,
+            a.sentiment,
             a.confidence_score
         FROM stock_analysis a
         WHERE a.report_date = %(report_date)s
@@ -192,6 +203,7 @@ def _load_relevant_news(report_date: date, limit: int = 5) -> list[dict[str, Any
         SELECT
             n.stock_name,
             n.title,
+            n.source,
             n.published_at,
             n.relevance_score,
             n.link
@@ -224,21 +236,23 @@ def _build_signal_table(rows: list[dict[str, Any]], styles: dict[str, Any]) -> A
 
     table_rows = [
         [
+            _paragraph("순위", styles["small"]),
             _paragraph("종목명", styles["small"]),
             _paragraph("거래대금", styles["small"]),
             _paragraph("대표테마", styles["small"]),
         ]
     ]
-    for row in rows:
+    for rank, row in enumerate(rows, start=1):
         table_rows.append(
             [
+                _paragraph(rank, styles["small"]),
                 _paragraph(row.get("stock_name"), styles["small"]),
                 _paragraph(_format_number(row.get("trading_value")), styles["small"]),
                 _paragraph(row.get("primary_theme"), styles["small"]),
             ]
         )
 
-    table = Table(table_rows, colWidths=[130, 110, 230], repeatRows=1)
+    table = Table(table_rows, colWidths=[35, 120, 105, 210], repeatRows=1)
     table.setStyle(
         TableStyle(
             [
@@ -262,20 +276,21 @@ def _build_news_table(rows: list[dict[str, Any]], styles: dict[str, Any]) -> Any
             _paragraph("title", styles["small"]),
             _paragraph("published_at", styles["small"]),
             _paragraph("score", styles["small"]),
-            _paragraph("link", styles["small"]),
+            _paragraph("출처", styles["small"]),
         ]
     ]
     for row in rows:
+        source = _text(row.get("source"))
         table_rows.append(
             [
                 _paragraph(row.get("title"), styles["small"]),
                 _paragraph(row.get("published_at"), styles["small"]),
                 _paragraph(row.get("relevance_score"), styles["small"]),
-                _paragraph(_short_link(row.get("link")), styles["small"]),
+                _link_paragraph(row.get("link"), source if source != "-" else "원문", styles["small"]),
             ]
         )
 
-    table = Table(table_rows, colWidths=[190, 85, 45, 150], repeatRows=1)
+    table = Table(table_rows, colWidths=[230, 95, 45, 100], repeatRows=1)
     table.setStyle(
         TableStyle(
             [
@@ -304,6 +319,7 @@ def generate_daily_report(report_date: date) -> Path:
     daily_theme = _load_daily_theme_analysis(report_date) or {}
     signals = _load_signal_events(report_date)
     analyses = _load_stock_analyses(report_date)
+    analyses_by_stock = {row["stock_name"]: row for row in analyses}
     news = _load_relevant_news(report_date, limit=5)
 
     doc = SimpleDocTemplate(
@@ -344,9 +360,18 @@ def generate_daily_report(report_date: date) -> Path:
     story.append(PageBreak())
 
     story.append(Paragraph("종목별 상세", styles["heading"]))
-    if analyses:
-        for analysis in analyses:
-            story.append(Paragraph(_text(analysis.get("stock_name")), styles["heading"]))
+    if signals:
+        for signal in signals:
+            stock_name = _text(signal.get("stock_name"))
+            analysis = analyses_by_stock.get(stock_name)
+            title = f"{stock_name} / 대표테마: {_text(signal.get('primary_theme'))}"
+            story.append(Paragraph(title, styles["heading"]))
+
+            if analysis is None:
+                story.append(_paragraph("분석 데이터 없음", styles["body"]))
+                story.append(Spacer(1, 8))
+                continue
+
             for label in (
                 "summary",
                 "key_issues",
@@ -354,11 +379,15 @@ def generate_daily_report(report_date: date) -> Path:
                 "risk_points",
                 "theme_points",
                 "tomorrow_checkpoints",
+                "sentiment",
+                "confidence_score",
             ):
-                story.append(_paragraph(f"{label}: {_text(analysis.get(label))}", styles["body"]))
+                story.append(
+                    _paragraph(f"{label}: {_text(analysis.get(label))}", styles["body"])
+                )
             story.append(Spacer(1, 8))
     else:
-        story.append(_paragraph("저장된 stock_analysis 데이터가 없습니다.", styles["body"]))
+        story.append(_paragraph("해당 날짜의 signal_event 데이터가 없습니다.", styles["body"]))
 
     story.append(Paragraph("관련 뉴스", styles["heading"]))
     if news:

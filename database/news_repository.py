@@ -889,6 +889,64 @@ def analyze_signal_stocks(
     }
 
 
+def analyze_signal_event_stocks(
+    report_date: date,
+    limit_news: int = 20,
+    mock: bool = False,
+) -> dict[str, Any]:
+    signal_stocks = get_signal_stocks_by_date(report_date)
+    results: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    errors: list[dict[str, str]] = []
+
+    for stock in signal_stocks:
+        stock_name = stock.get("stock_name")
+        if not stock_name:
+            skipped.append(
+                {
+                    "stock_name": stock.get("stock_code") or "-",
+                    "reason": "종목명 없음",
+                }
+            )
+            continue
+
+        news_items = get_relevant_news_for_analysis(
+            stock_name=stock_name,
+            limit=limit_news,
+        )
+        if not news_items and not mock:
+            print(f"{stock_name}: 관련 뉴스 부족")
+            skipped.append({"stock_name": stock_name, "reason": "관련 뉴스 부족"})
+            continue
+
+        if not news_items:
+            print(f"{stock_name}: 관련 뉴스 부족 - mock 분석 생성")
+
+        try:
+            result = analyze_stock_news(
+                stock_name=stock_name,
+                report_date=report_date,
+                limit=limit_news,
+                mock=mock,
+            )
+        except Exception as error:
+            errors.append({"stock_name": stock_name, "error": str(error)})
+            continue
+
+        results.append(result)
+
+    return {
+        "report_date": report_date,
+        "target_count": len(signal_stocks),
+        "success_count": len(results),
+        "skip_count": len(skipped),
+        "error_count": len(errors),
+        "results": results,
+        "skipped": skipped,
+        "errors": errors,
+    }
+
+
 def get_signal_stocks_by_date(report_date: date) -> list[dict[str, Any]]:
     sql = """
         SELECT
