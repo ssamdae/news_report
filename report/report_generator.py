@@ -221,6 +221,57 @@ def _load_relevant_news(report_date: date, limit: int = 5) -> list[dict[str, Any
     return _fetch_all(sql, {"report_date": report_date, "limit": limit})
 
 
+def get_stock_news_for_report(
+    stock_name: str,
+    report_date: date,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    date_sql = """
+        SELECT
+            n.stock_name,
+            n.title,
+            n.source,
+            n.published_at,
+            n.relevance_score,
+            n.link
+        FROM news_article n
+        WHERE n.stock_name = %(stock_name)s
+            AND n.is_relevant = TRUE
+            AND (
+                n.published_at::date = %(report_date)s
+                OR n.created_at::date = %(report_date)s
+            )
+        ORDER BY n.relevance_score DESC NULLS LAST,
+            n.published_at DESC NULLS LAST,
+            n.id DESC
+        LIMIT %(limit)s
+    """
+    rows = _fetch_all(
+        date_sql,
+        {"stock_name": stock_name, "report_date": report_date, "limit": limit},
+    )
+    if rows:
+        return rows
+
+    fallback_sql = """
+        SELECT
+            n.stock_name,
+            n.title,
+            n.source,
+            n.published_at,
+            n.relevance_score,
+            n.link
+        FROM news_article n
+        WHERE n.stock_name = %(stock_name)s
+            AND n.is_relevant = TRUE
+        ORDER BY n.relevance_score DESC NULLS LAST,
+            n.published_at DESC NULLS LAST,
+            n.id DESC
+        LIMIT %(limit)s
+    """
+    return _fetch_all(fallback_sql, {"stock_name": stock_name, "limit": limit})
+
+
 def _add_key_value_section(story: list[Any], title: str, rows: list[tuple[str, Any]], styles: dict[str, Any]) -> None:
     from reportlab.platypus import Paragraph, Spacer
 
@@ -273,24 +324,28 @@ def _build_news_table(rows: list[dict[str, Any]], styles: dict[str, Any]) -> Any
 
     table_rows = [
         [
+            _paragraph("번호", styles["small"]),
             _paragraph("title", styles["small"]),
             _paragraph("published_at", styles["small"]),
             _paragraph("score", styles["small"]),
             _paragraph("출처", styles["small"]),
+            _paragraph("원문", styles["small"]),
         ]
     ]
-    for row in rows:
+    for index, row in enumerate(rows, start=1):
         source = _text(row.get("source"))
         table_rows.append(
             [
+                _paragraph(index, styles["small"]),
                 _paragraph(row.get("title"), styles["small"]),
                 _paragraph(row.get("published_at"), styles["small"]),
                 _paragraph(row.get("relevance_score"), styles["small"]),
-                _link_paragraph(row.get("link"), source if source != "-" else "원문", styles["small"]),
+                _paragraph(source, styles["small"]),
+                _link_paragraph(row.get("link"), "원문", styles["small"]),
             ]
         )
 
-    table = Table(table_rows, colWidths=[230, 95, 45, 100], repeatRows=1)
+    table = Table(table_rows, colWidths=[30, 205, 85, 40, 75, 35], repeatRows=1)
     table.setStyle(
         TableStyle(
             [
@@ -369,27 +424,39 @@ def generate_daily_report(report_date: date) -> Path:
 
             if analysis is None:
                 story.append(_paragraph("분석 데이터 없음", styles["body"]))
-                story.append(Spacer(1, 8))
-                continue
+            else:
+                for label in (
+                    "summary",
+                    "key_issues",
+                    "positive_points",
+                    "risk_points",
+                    "theme_points",
+                    "tomorrow_checkpoints",
+                    "sentiment",
+                    "confidence_score",
+                ):
+                    story.append(
+                        _paragraph(
+                            f"{label}: {_text(analysis.get(label))}",
+                            styles["body"],
+                        )
+                    )
 
-            for label in (
-                "summary",
-                "key_issues",
-                "positive_points",
-                "risk_points",
-                "theme_points",
-                "tomorrow_checkpoints",
-                "sentiment",
-                "confidence_score",
-            ):
-                story.append(
-                    _paragraph(f"{label}: {_text(analysis.get(label))}", styles["body"])
-                )
-            story.append(Spacer(1, 8))
+            story.append(Paragraph("관련 뉴스", styles["heading"]))
+            stock_news = get_stock_news_for_report(
+                stock_name=stock_name,
+                report_date=report_date,
+                limit=5,
+            )
+            if stock_news:
+                story.append(_build_news_table(stock_news, styles))
+            else:
+                story.append(_paragraph("관련 뉴스 없음", styles["body"]))
+            story.append(Spacer(1, 10))
     else:
         story.append(_paragraph("해당 날짜의 signal_event 데이터가 없습니다.", styles["body"]))
 
-    story.append(Paragraph("관련 뉴스", styles["heading"]))
+    story.append(Paragraph("전체 관련 뉴스 TOP 5", styles["heading"]))
     if news:
         story.append(_build_news_table(news, styles))
     else:
