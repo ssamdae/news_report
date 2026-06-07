@@ -139,6 +139,15 @@ def load_news_by_stock(stock_code: str) -> pd.DataFrame:
     return read_sql(query, {"stock_code": stock_code})
 
 
+def load_analysis_stock_names() -> pd.DataFrame:
+    query = """
+        SELECT DISTINCT stock_name
+        FROM stock_analysis
+        ORDER BY stock_name
+    """
+    return read_sql(query)
+
+
 def display_news_table(news: pd.DataFrame) -> None:
     if news.empty:
         st.info("저장된 뉴스가 없습니다.")
@@ -310,3 +319,112 @@ else:
             st.warning(f"뉴스 조회 중 오류가 발생했습니다: {error}")
         else:
             display_news_table(stock_news)
+
+st.divider()
+st.subheader("AI 분석")
+
+try:
+    analysis_stocks = load_analysis_stock_names()
+except Exception as error:
+    st.warning(f"AI 분석 종목 목록 조회 중 오류가 발생했습니다: {error}")
+    analysis_stocks = pd.DataFrame(columns=["stock_name"])
+
+analysis_options = ["직접 입력"]
+if not analysis_stocks.empty:
+    analysis_options.extend(analysis_stocks["stock_name"].dropna().astype(str).tolist())
+
+analysis_cols = st.columns([2, 2])
+analysis_choice = analysis_cols[0].selectbox("분석 종목 선택", analysis_options)
+manual_stock_name = analysis_cols[1].text_input("종목명 직접 입력")
+
+analysis_stock_name = (
+    manual_stock_name.strip()
+    if manual_stock_name.strip()
+    else (analysis_choice if analysis_choice != "직접 입력" else "")
+)
+analysis_date = st.date_input("분석일 선택", value=selected_date, key="analysis_date")
+
+if not analysis_stock_name:
+    st.info("AI 분석을 조회할 종목명을 선택하거나 입력하세요.")
+else:
+    from database.news_repository import (
+        get_relevant_news_for_display,
+        get_stock_analysis,
+    )
+
+    try:
+        analysis = get_stock_analysis(
+            stock_name=analysis_stock_name,
+            report_date=analysis_date,
+        )
+    except Exception as error:
+        st.warning(f"AI 분석 조회 중 오류가 발생했습니다: {error}")
+        analysis = pd.DataFrame()
+
+    if analysis.empty:
+        st.info(
+            "해당 종목의 분석 결과가 없습니다. analyze-stock 명령을 먼저 실행하세요."
+        )
+    else:
+        analysis_row = analysis.iloc[0]
+        st.markdown(f"#### {analysis_row['stock_name']} AI 분석")
+
+        metric_cols = st.columns(4)
+        metric_cols[0].metric("분석일", str(analysis_row["report_date"]))
+        metric_cols[1].metric("sentiment", analysis_row["sentiment"] or "-")
+        metric_cols[2].metric(
+            "confidence",
+            (
+                f"{float(analysis_row['confidence_score']):.2f}"
+                if pd.notna(analysis_row["confidence_score"])
+                else "-"
+            ),
+        )
+        metric_cols[3].metric(
+            "사용 뉴스 수",
+            f"{int(analysis_row['source_news_count']):,}",
+        )
+
+        st.markdown("##### 한줄 요약")
+        st.write(analysis_row["summary"] or "-")
+
+        text_sections = [
+            ("핵심 이슈", "key_issues"),
+            ("상승/관심 요인", "positive_points"),
+            ("리스크 요인", "risk_points"),
+            ("관련 테마", "theme_points"),
+            ("내일 체크포인트", "tomorrow_checkpoints"),
+        ]
+        for label, column in text_sections:
+            st.markdown(f"##### {label}")
+            st.write(analysis_row[column] or "-")
+
+    st.markdown("#### 관련 뉴스")
+    try:
+        relevant_news = get_relevant_news_for_display(
+            stock_name=analysis_stock_name,
+            limit=30,
+        )
+    except Exception as error:
+        st.warning(f"관련 뉴스 조회 중 오류가 발생했습니다: {error}")
+    else:
+        if relevant_news.empty:
+            st.info("관련 뉴스가 없습니다.")
+        else:
+            display_relevant_news = relevant_news.rename(
+                columns={
+                    "title": "제목",
+                    "search_query": "검색쿼리",
+                    "relevance_score": "관련성점수",
+                    "published_at": "발행시각",
+                    "link": "link",
+                }
+            )
+            st.dataframe(
+                display_relevant_news,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "link": st.column_config.LinkColumn("link"),
+                },
+            )

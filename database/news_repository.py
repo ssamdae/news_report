@@ -696,3 +696,83 @@ def analyze_stock_news(
         "source_news_count": len(news_items),
         **normalized,
     }
+
+
+def get_stock_analysis(
+    stock_name: str,
+    report_date: date | None = None,
+) -> pd.DataFrame:
+    if report_date is None:
+        sql = """
+            SELECT
+                stock_name,
+                report_date,
+                analysis_date,
+                summary,
+                key_issues,
+                positive_points,
+                risk_points,
+                theme_points,
+                tomorrow_checkpoints,
+                sentiment,
+                confidence_score,
+                source_news_count
+            FROM stock_analysis
+            WHERE stock_name = %(stock_name)s
+            ORDER BY report_date DESC, analysis_date DESC
+            LIMIT 1
+        """
+        params = {"stock_name": stock_name}
+    else:
+        sql = """
+            SELECT
+                stock_name,
+                report_date,
+                analysis_date,
+                summary,
+                key_issues,
+                positive_points,
+                risk_points,
+                theme_points,
+                tomorrow_checkpoints,
+                sentiment,
+                confidence_score,
+                source_news_count
+            FROM stock_analysis
+            WHERE stock_name = %(stock_name)s
+                AND report_date = %(report_date)s
+            ORDER BY analysis_date DESC
+            LIMIT 1
+        """
+        params = {"stock_name": stock_name, "report_date": report_date}
+
+    with get_connection() as connection:
+        return pd.read_sql_query(sql, connection, params=params)
+
+
+def get_relevant_news_for_display(
+    stock_name: str,
+    limit: int = 30,
+) -> pd.DataFrame:
+    sql = """
+        SELECT
+            title,
+            search_query,
+            relevance_score,
+            published_at,
+            link
+        FROM news_article
+        WHERE stock_name = %(stock_name)s
+            AND is_relevant = TRUE
+        ORDER BY relevance_score DESC NULLS LAST,
+            published_at DESC NULLS LAST,
+            id DESC
+        LIMIT %(limit)s
+    """
+
+    with get_connection() as connection:
+        return pd.read_sql_query(
+            sql,
+            connection,
+            params={"stock_name": stock_name, "limit": limit},
+        )
