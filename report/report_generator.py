@@ -65,34 +65,56 @@ def _news_summary_text(row: dict[str, Any]) -> str:
     return description[:140] + ("..." if len(description) > 140 else "")
 
 
-def _register_korean_font() -> str:
+def _register_korean_font() -> tuple[str, str]:
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.cidfonts import UnicodeCIDFont
     from reportlab.pdfbase.ttfonts import TTFont
 
     font_candidates = [
-        ("AppleGothic", "/System/Library/Fonts/AppleGothic.ttf"),
-        ("NanumGothic", "/usr/share/fonts/truetype/nanum/NanumGothic.ttf"),
-        ("NotoSansCJK", "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+        (
+            "NanumGothic",
+            "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+            "NanumGothicBold",
+            "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf",
+        ),
+        (
+            "AppleGothic",
+            "/System/Library/Fonts/AppleGothic.ttf",
+            "AppleGothic",
+            "/System/Library/Fonts/AppleGothic.ttf",
+        ),
+        (
+            "NotoSansCJK",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "NotoSansCJKBold",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        ),
     ]
-    for font_name, font_path in font_candidates:
+    for font_name, font_path, bold_name, bold_path in font_candidates:
         path = Path(font_path)
         if not path.exists():
             continue
         try:
             pdfmetrics.registerFont(TTFont(font_name, str(path)))
-            return font_name
+            if Path(bold_path).exists():
+                try:
+                    pdfmetrics.registerFont(TTFont(bold_name, bold_path))
+                except Exception:
+                    bold_name = font_name
+            else:
+                bold_name = font_name
+            return font_name, bold_name
         except Exception:
             continue
 
     try:
         pdfmetrics.registerFont(UnicodeCIDFont("HYSMyeongJo-Medium"))
-        return "HYSMyeongJo-Medium"
+        return "HYSMyeongJo-Medium", "HYSMyeongJo-Medium"
     except Exception:
-        return "Helvetica"
+        return "Helvetica", "Helvetica-Bold"
 
 
-def _build_styles(font_name: str) -> dict[str, Any]:
+def _build_styles(font_name: str, bold_font_name: str) -> dict[str, Any]:
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 
     styles = getSampleStyleSheet()
@@ -100,29 +122,38 @@ def _build_styles(font_name: str) -> dict[str, Any]:
         "title": ParagraphStyle(
             "KoreanTitle",
             parent=styles["Title"],
-            fontName=font_name,
-            fontSize=24,
-            leading=32,
-            spaceAfter=18,
+            fontName=bold_font_name,
+            fontSize=22,
+            leading=30,
+            spaceAfter=24,
             alignment=1,
         ),
         "heading": ParagraphStyle(
             "KoreanHeading",
             parent=styles["Heading2"],
-            fontName=font_name,
+            fontName=bold_font_name,
             fontSize=15,
             leading=20,
-            spaceBefore=12,
+            spaceBefore=18,
+            spaceAfter=10,
+        ),
+        "stock_heading": ParagraphStyle(
+            "KoreanStockHeading",
+            parent=styles["Heading3"],
+            fontName=bold_font_name,
+            fontSize=13,
+            leading=18,
+            spaceBefore=10,
             spaceAfter=8,
         ),
         "section": ParagraphStyle(
             "KoreanSection",
             parent=styles["Heading3"],
-            fontName=font_name,
+            fontName=bold_font_name,
             fontSize=12,
             leading=16,
-            spaceBefore=10,
-            spaceAfter=5,
+            spaceBefore=12,
+            spaceAfter=6,
         ),
         "body": ParagraphStyle(
             "KoreanBody",
@@ -130,7 +161,15 @@ def _build_styles(font_name: str) -> dict[str, Any]:
             fontName=font_name,
             fontSize=9,
             leading=14,
-            spaceAfter=6,
+            spaceAfter=8,
+        ),
+        "table_header": ParagraphStyle(
+            "KoreanTableHeader",
+            parent=styles["BodyText"],
+            fontName=bold_font_name,
+            fontSize=8,
+            leading=11,
+            spaceAfter=4,
         ),
         "small": ParagraphStyle(
             "KoreanSmall",
@@ -312,10 +351,10 @@ def _build_signal_table(rows: list[dict[str, Any]], styles: dict[str, Any]) -> A
 
     table_rows = [
         [
-            _paragraph("순위", styles["small"]),
-            _paragraph("종목명", styles["small"]),
-            _paragraph("거래대금", styles["small"]),
-            _paragraph("대표테마", styles["small"]),
+            _paragraph("순위", styles["table_header"]),
+            _paragraph("종목명", styles["table_header"]),
+            _paragraph("거래대금", styles["table_header"]),
+            _paragraph("대표테마", styles["table_header"]),
         ]
     ]
     for rank, row in enumerate(rows, start=1):
@@ -332,7 +371,7 @@ def _build_signal_table(rows: list[dict[str, Any]], styles: dict[str, Any]) -> A
     table.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EAEAEA")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D9D9D9")),
                 ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 5),
@@ -349,13 +388,13 @@ def _build_news_table(rows: list[dict[str, Any]], styles: dict[str, Any]) -> Any
 
     table_rows = [
         [
-            _paragraph("번호", styles["small"]),
-            _paragraph("제목", styles["small"]),
-            _paragraph("요약", styles["small"]),
-            _paragraph("발행시각", styles["small"]),
-            _paragraph("score", styles["small"]),
-            _paragraph("출처", styles["small"]),
-            _paragraph("원문", styles["small"]),
+            _paragraph("번호", styles["table_header"]),
+            _paragraph("제목", styles["table_header"]),
+            _paragraph("요약", styles["table_header"]),
+            _paragraph("발행시각", styles["table_header"]),
+            _paragraph("score", styles["table_header"]),
+            _paragraph("출처", styles["table_header"]),
+            _paragraph("원문", styles["table_header"]),
         ]
     ]
     for index, row in enumerate(rows, start=1):
@@ -376,7 +415,7 @@ def _build_news_table(rows: list[dict[str, Any]], styles: dict[str, Any]) -> Any
     table.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EAEAEA")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D9D9D9")),
                 ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 4),
@@ -391,14 +430,14 @@ def _add_separator(story: list[Any]) -> None:
     from reportlab.lib import colors
     from reportlab.platypus import HRFlowable, Spacer
 
-    story.append(Spacer(1, 6))
+    story.append(Spacer(1, 12))
     story.append(
         HRFlowable(
             width="100%",
-            thickness=0.5,
+            thickness=0.7,
             color=colors.HexColor("#BDBDBD"),
-            spaceBefore=4,
-            spaceAfter=8,
+            spaceBefore=6,
+            spaceAfter=12,
         )
     )
 
@@ -407,8 +446,8 @@ def generate_daily_report(report_date: date) -> Path:
     from reportlab.lib.pagesizes import A4
     from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer
 
-    font_name = _register_korean_font()
-    styles = _build_styles(font_name)
+    font_name, bold_font_name = _register_korean_font()
+    styles = _build_styles(font_name, bold_font_name)
 
     output_dir = REPORT_ROOT / report_date.isoformat()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -469,7 +508,7 @@ def generate_daily_report(report_date: date) -> Path:
             stock_name = _text(signal.get("stock_name"))
             analysis = analyses_by_stock.get(stock_name)
             title = f"{stock_name} / 대표테마: {_text(signal.get('primary_theme'))}"
-            story.append(Paragraph(title, styles["heading"]))
+            story.append(Paragraph(title, styles["stock_heading"]))
 
             if analysis is None:
                 story.append(_paragraph("분석 데이터 없음", styles["body"]))
@@ -496,7 +535,7 @@ def generate_daily_report(report_date: date) -> Path:
                 story.append(_build_news_table(stock_news, styles))
             else:
                 story.append(_paragraph("관련 뉴스 없음", styles["body"]))
-            story.append(Spacer(1, 10))
+            story.append(Spacer(1, 18))
     else:
         story.append(_paragraph("해당 날짜의 signal_event 데이터가 없습니다.", styles["body"]))
 
