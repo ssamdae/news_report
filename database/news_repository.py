@@ -224,10 +224,20 @@ def _records_from_dataframe(df: pd.DataFrame) -> list[dict[str, Any]]:
             df[column] = None
 
     records = df[NEWS_COLUMNS].to_dict("records")
-    return [
+    cleaned_records = [
         {key: _clean_value(value) for key, value in record.items()}
         for record in records
     ]
+
+    for record in cleaned_records:
+        if record.get("relevance_score") is None:
+            record["relevance_score"] = 0
+        if record.get("relevance_reason") is None:
+            record["relevance_reason"] = "not_scored"
+        if record.get("is_relevant") is None:
+            record["is_relevant"] = False
+
+    return cleaned_records
 
 
 def load_active_stock_keywords(stock_codes: list[str]) -> pd.DataFrame:

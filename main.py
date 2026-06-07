@@ -17,7 +17,11 @@ def _parse_date(value: str | None) -> date:
 def run(target_date: date, limit_stocks: int | None = None) -> None:
     from collector.news_collector import collect_news_for_signals
     from collector.stock_collector import collect_daily_stocks
-    from database.news_repository import load_active_stock_keywords, save_news_articles
+    from database.news_repository import (
+        apply_news_relevance_scores,
+        load_active_stock_keywords,
+        save_news_articles,
+    )
     from database.signal_event_repository import save_signal_events
     from database.stock_repository import save_daily_prices, save_stock_master
     from filter.signal_filter import filter_500eok_signal
@@ -45,6 +49,8 @@ def run(target_date: date, limit_stocks: int | None = None) -> None:
     print(f"stock_keyword_map 활성 키워드 조회 완료: {len(keyword_df)}건")
 
     news_df = collect_news_for_signals(signal_df, keyword_df=keyword_df)
+    if not news_df.empty:
+        news_df = apply_news_relevance_scores(news_df)
     news_count = save_news_articles(news_df)
     print(f"news_article 저장 완료: {news_count}건")
 
