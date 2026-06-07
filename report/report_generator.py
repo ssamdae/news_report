@@ -55,6 +55,21 @@ def _format_number(value: Any) -> str:
         return str(value)
 
 
+def _format_score(value: Any) -> str:
+    if value is None:
+        return "-"
+    try:
+        return f"{float(value):.0f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _truncate_with_ellipsis(text: str, max_length: int) -> str:
+    if len(text) <= max_length:
+        return text
+    return text[:max_length].rstrip() + "..."
+
+
 def _news_summary_text(row: dict[str, Any]) -> str:
     summary = _text(row.get("ai_summary"))
     if summary != "-":
@@ -62,12 +77,12 @@ def _news_summary_text(row: dict[str, Any]) -> str:
         sentences = compact.split(". ")
         if len(sentences) > 2:
             compact = ". ".join(sentences[:2]).rstrip(".") + "."
-        return compact[:120] + ("..." if len(compact) > 120 else "")
+        return _truncate_with_ellipsis(compact, 60)
     description = _text(row.get("description"))
     if description == "-":
         return ""
     compact = " ".join(description.replace("\n", " ").split())
-    return compact[:120] + ("..." if len(compact) > 120 else "")
+    return _truncate_with_ellipsis(compact, 60)
 
 
 def _register_korean_font() -> tuple[str, str]:
@@ -123,8 +138,16 @@ def _register_korean_font() -> tuple[str, str]:
                 try:
                     pdfmetrics.registerFont(TTFont(bold_name, bold_path))
                 except Exception:
+                    print(
+                        "WARNING: Bold font not found. "
+                        "Section titles may not appear bold."
+                    )
                     bold_name = font_name
             else:
+                print(
+                    "WARNING: Bold font not found. "
+                    "Section titles may not appear bold."
+                )
                 bold_name = font_name
             return font_name, bold_name
         except Exception:
@@ -132,6 +155,7 @@ def _register_korean_font() -> tuple[str, str]:
 
     try:
         pdfmetrics.registerFont(UnicodeCIDFont("HYSMyeongJo-Medium"))
+        print("WARNING: Bold font not found. Section titles may not appear bold.")
         return "HYSMyeongJo-Medium", "HYSMyeongJo-Medium"
     except Exception:
         return "Helvetica", "Helvetica-Bold"
@@ -417,7 +441,7 @@ def _build_news_table(rows: list[dict[str, Any]], styles: dict[str, Any]) -> Any
             _paragraph("제목", styles["table_header"]),
             _paragraph("요약", styles["table_header"]),
             _paragraph("발행시각", styles["table_header"]),
-            _paragraph("score", styles["table_header"]),
+            _paragraph("점수", styles["table_header"]),
             _paragraph("출처", styles["table_header"]),
             _paragraph("원문", styles["table_header"]),
         ]
@@ -430,13 +454,13 @@ def _build_news_table(rows: list[dict[str, Any]], styles: dict[str, Any]) -> Any
                 _paragraph(row.get("title"), styles["small"]),
                 _paragraph(_news_summary_text(row), styles["small"]),
                 _paragraph(row.get("published_at"), styles["small"]),
-                _paragraph(row.get("relevance_score"), styles["small"]),
+                _paragraph(_format_score(row.get("relevance_score")), styles["small"]),
                 _paragraph(source, styles["small"]),
                 _link_paragraph(row.get("link"), "원문", styles["small"]),
             ]
         )
 
-    table = Table(table_rows, colWidths=[25, 140, 130, 75, 35, 60, 30], repeatRows=1)
+    table = Table(table_rows, colWidths=[25, 115, 95, 75, 35, 60, 30], repeatRows=1)
     table.setStyle(
         TableStyle(
             [
@@ -471,9 +495,17 @@ def _add_separator(story: list[Any]) -> None:
 
 def generate_daily_report(report_date: date) -> Path:
     from reportlab.lib.pagesizes import A4
-    from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer
+    from reportlab.platypus import (
+        KeepTogether,
+        PageBreak,
+        Paragraph,
+        SimpleDocTemplate,
+        Spacer,
+    )
 
     font_name, bold_font_name = _register_korean_font()
+    print(f"PDF font regular: {font_name}")
+    print(f"PDF font bold: {bold_font_name}")
     styles = _build_styles(font_name, bold_font_name)
 
     output_dir = REPORT_ROOT / report_date.isoformat()
@@ -521,10 +553,17 @@ def generate_daily_report(report_date: date) -> Path:
         styles,
     )
 
-    story.append(Paragraph("500억봉 종목 요약", styles["heading"]))
     if signals:
-        story.append(_build_signal_table(signals, styles))
+        story.append(
+            KeepTogether(
+                [
+                    Paragraph("500억봉 종목 요약", styles["heading"]),
+                    _build_signal_table(signals, styles),
+                ]
+            )
+        )
     else:
+        story.append(Paragraph("500억봉 종목 요약", styles["heading"]))
         story.append(_paragraph("해당 날짜의 signal_event 데이터가 없습니다.", styles["body"]))
     story.append(PageBreak())
 
