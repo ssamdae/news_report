@@ -538,6 +538,30 @@ def analyze_daily_themes_command(
     print(f"market_summary: {preview}")
 
 
+def summarize_news_command(
+    report_date: date,
+    stock_name: str | None,
+    limit: int,
+    mock: bool,
+) -> None:
+    from database.news_repository import summarize_news_articles
+
+    result = summarize_news_articles(
+        report_date=report_date,
+        stock_name=stock_name,
+        limit=limit,
+        mock=mock,
+    )
+    print(f"뉴스 요약 기준일: {result['report_date']}")
+    print(f"요약 대상 뉴스 수: {result['target_count']}건")
+    print(f"성공: {result['success_count']}건")
+    print(f"실패: {result['error_count']}건")
+    if result["errors"]:
+        print("실패 뉴스 목록:")
+        for row in result["errors"]:
+            print(f"- {row['id']} {row['title']}: {row['error']}")
+
+
 def generate_report_command(report_date: date) -> None:
     from report.report_generator import generate_daily_report
 
@@ -558,48 +582,66 @@ def run_daily_report_command(
     mock: bool = False,
     limit_stocks: int | None = None,
 ) -> None:
-    from database.news_repository import analyze_daily_themes, analyze_signal_event_stocks
+    from database.news_repository import (
+        analyze_daily_themes,
+        analyze_signal_event_stocks,
+        summarize_news_articles,
+    )
     from report.report_generator import generate_daily_report
 
     current_step = "준비"
     try:
-        current_step = "[1/4] 주가 수집 및 500억봉 탐지"
-        print("[1/4] 주가 수집 및 500억봉 탐지 시작")
+        current_step = "[1/5] 주가 수집 및 500억봉 탐지"
+        print("[1/5] 주가 수집 및 500억봉 탐지 시작")
         run(report_date, limit_stocks=limit_stocks)
-        print("[1/4] 완료")
+        print("[1/5] 완료")
 
-        current_step = "[2/4] 500억봉 종목 AI 분석"
-        print("[2/4] 500억봉 종목 AI 분석 시작")
+        current_step = "[2/5] 뉴스 요약"
+        print("[2/5] 뉴스 요약 시작")
+        news_summary_result = summarize_news_articles(
+            report_date=report_date,
+            limit=100,
+            mock=mock,
+        )
+        print(
+            "[2/5] 완료 "
+            f"(대상 {news_summary_result['target_count']}건, "
+            f"성공 {news_summary_result['success_count']}건, "
+            f"실패 {news_summary_result['error_count']}건)"
+        )
+
+        current_step = "[3/5] 500억봉 종목 AI 분석"
+        print("[3/5] 500억봉 종목 AI 분석 시작")
         signal_result = analyze_signal_event_stocks(
             report_date=report_date,
             limit_news=20,
             mock=mock,
         )
         print(
-            "[2/4] 완료 "
+            "[3/5] 완료 "
             f"(대상 {signal_result['target_count']}건, "
             f"성공 {signal_result['success_count']}건, "
             f"스킵 {signal_result['skip_count']}건, "
             f"실패 {signal_result['error_count']}건)"
         )
 
-        current_step = "[3/4] 일일 테마 분석"
-        print("[3/4] 일일 테마 분석 시작")
+        current_step = "[4/5] 일일 테마 분석"
+        print("[4/5] 일일 테마 분석 시작")
         theme_result = analyze_daily_themes(
             report_date=report_date,
             limit_news_per_stock=5,
             mock=mock,
         )
         print(
-            "[3/4] 완료 "
+            "[4/5] 완료 "
             f"(500억봉 {theme_result['source_stock_count']}건, "
             f"뉴스 {theme_result['source_news_count']}건)"
         )
 
-        current_step = "[4/4] PDF 생성"
-        print("[4/4] PDF 생성 시작")
+        current_step = "[5/5] PDF 생성"
+        print("[5/5] PDF 생성 시작")
         output_path = generate_daily_report(report_date)
-        print(f"[4/4] 완료: {output_path}")
+        print(f"[5/5] 완료: {output_path}")
     except Exception as error:
         _print_pipeline_failure(current_step, error)
         raise SystemExit(1) from error
@@ -771,6 +813,17 @@ def main() -> None:
         analyze_signal_stocks_command(
             report_date=_parse_date(args.date),
             limit_news=args.limit_news,
+            mock=args.mock,
+        )
+        return
+
+    if args.command == "summarize-news":
+        if not args.date:
+            parser.error("summarize-news requires --date")
+        summarize_news_command(
+            report_date=_parse_date(args.date),
+            stock_name=args.stock_name,
+            limit=args.limit or 100,
             mock=args.mock,
         )
         return

@@ -55,6 +55,16 @@ def _format_number(value: Any) -> str:
         return str(value)
 
 
+def _news_summary_text(row: dict[str, Any]) -> str:
+    summary = _text(row.get("ai_summary"))
+    if summary != "-":
+        return summary
+    description = _text(row.get("description"))
+    if description == "-":
+        return ""
+    return description[:140] + ("..." if len(description) > 140 else "")
+
+
 def _register_korean_font() -> str:
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.cidfonts import UnicodeCIDFont
@@ -163,6 +173,8 @@ def _load_daily_theme_analysis(report_date: date) -> dict[str, Any] | None:
             strong_themes,
             theme_rankings,
             key_issues,
+            market_drivers,
+            top_picks,
             risk_points,
             tomorrow_checkpoints,
             confidence_score,
@@ -219,6 +231,8 @@ def _load_relevant_news(report_date: date, limit: int = 5) -> list[dict[str, Any
         SELECT
             n.stock_name,
             n.title,
+            n.description,
+            n.ai_summary,
             n.source,
             n.published_at,
             n.relevance_score,
@@ -246,6 +260,8 @@ def get_stock_news_for_report(
         SELECT
             n.stock_name,
             n.title,
+            n.description,
+            n.ai_summary,
             n.source,
             n.published_at,
             n.relevance_score,
@@ -273,6 +289,8 @@ def get_stock_news_for_report(
         SELECT
             n.stock_name,
             n.title,
+            n.description,
+            n.ai_summary,
             n.source,
             n.published_at,
             n.relevance_score,
@@ -332,8 +350,9 @@ def _build_news_table(rows: list[dict[str, Any]], styles: dict[str, Any]) -> Any
     table_rows = [
         [
             _paragraph("번호", styles["small"]),
-            _paragraph("title", styles["small"]),
-            _paragraph("published_at", styles["small"]),
+            _paragraph("제목", styles["small"]),
+            _paragraph("요약", styles["small"]),
+            _paragraph("발행시각", styles["small"]),
             _paragraph("score", styles["small"]),
             _paragraph("출처", styles["small"]),
             _paragraph("원문", styles["small"]),
@@ -345,6 +364,7 @@ def _build_news_table(rows: list[dict[str, Any]], styles: dict[str, Any]) -> Any
             [
                 _paragraph(index, styles["small"]),
                 _paragraph(row.get("title"), styles["small"]),
+                _paragraph(_news_summary_text(row), styles["small"]),
                 _paragraph(row.get("published_at"), styles["small"]),
                 _paragraph(row.get("relevance_score"), styles["small"]),
                 _paragraph(source, styles["small"]),
@@ -352,7 +372,7 @@ def _build_news_table(rows: list[dict[str, Any]], styles: dict[str, Any]) -> Any
             ]
         )
 
-    table = Table(table_rows, colWidths=[30, 205, 85, 40, 75, 35], repeatRows=1)
+    table = Table(table_rows, colWidths=[25, 140, 130, 75, 35, 60, 30], repeatRows=1)
     table.setStyle(
         TableStyle(
             [
@@ -418,9 +438,15 @@ def generate_daily_report(report_date: date) -> Path:
 
     story.append(Paragraph("시장 요약", styles["heading"]))
     _add_report_section(story, "시장 요약", daily_theme.get("market_summary"), styles)
+    _add_report_section(story, "오늘의 TOP PICK 3", daily_theme.get("top_picks"), styles)
+    _add_report_section(
+        story,
+        "시장 핵심 이슈",
+        daily_theme.get("market_drivers"),
+        styles,
+    )
     _add_report_section(story, "강세 테마", daily_theme.get("strong_themes"), styles)
     _add_report_section(story, "테마 순위", daily_theme.get("theme_rankings"), styles)
-    _add_report_section(story, "주요 이슈", daily_theme.get("key_issues"), styles)
     _add_report_section(story, "리스크 요인", daily_theme.get("risk_points"), styles)
     _add_report_section(
         story,

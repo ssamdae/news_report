@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS news_article (
     relevance_score NUMERIC(10, 2),
     relevance_reason TEXT,
     is_relevant BOOLEAN NOT NULL DEFAULT TRUE,
+    ai_summary TEXT,
     created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -118,6 +119,9 @@ ALTER TABLE news_article
 
 ALTER TABLE news_article
     ADD COLUMN IF NOT EXISTS is_relevant BOOLEAN NOT NULL DEFAULT TRUE;
+
+ALTER TABLE news_article
+    ADD COLUMN IF NOT EXISTS ai_summary TEXT;
 
 CREATE TABLE IF NOT EXISTS pdf_signal_item (
     id BIGSERIAL PRIMARY KEY,
@@ -288,7 +292,9 @@ CREATE TABLE IF NOT EXISTS daily_theme_analysis (
     strong_themes TEXT,
     theme_rankings TEXT,
     key_issues TEXT,
+    market_drivers TEXT,
     leading_stocks TEXT,
+    top_picks TEXT,
     risk_points TEXT,
     tomorrow_checkpoints TEXT,
     confidence_score NUMERIC(10, 2),
@@ -297,6 +303,12 @@ CREATE TABLE IF NOT EXISTS daily_theme_analysis (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE daily_theme_analysis
+    ADD COLUMN IF NOT EXISTS market_drivers TEXT;
+
+ALTER TABLE daily_theme_analysis
+    ADD COLUMN IF NOT EXISTS top_picks TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_daily_price_trade_date
     ON daily_price (trade_date);

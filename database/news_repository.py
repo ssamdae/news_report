@@ -73,7 +73,9 @@ DAILY_THEME_ANALYSIS_COLUMNS = [
     "strong_themes",
     "theme_rankings",
     "key_issues",
+    "market_drivers",
     "leading_stocks",
+    "top_picks",
     "risk_points",
     "tomorrow_checkpoints",
     "confidence_score",
@@ -491,6 +493,136 @@ def score_news_relevance(stock_name: str, limit: int | None = None) -> dict[str,
         "relevant_count": relevant_count,
         "irrelevant_count": irrelevant_count,
         "average_relevance_score": average_score,
+    }
+
+
+def load_news_for_summary(
+    report_date: date,
+    stock_name: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    stock_filter = "AND stock_name = %(stock_name)s" if stock_name else ""
+    sql = f"""
+        SELECT
+            id,
+            stock_name,
+            title,
+            description,
+            search_term,
+            search_query,
+            source,
+            published_at,
+            relevance_score
+        FROM news_article
+        WHERE is_relevant = TRUE
+            AND (ai_summary IS NULL OR TRIM(ai_summary) = '')
+            AND (
+                published_at::date = %(report_date)s
+                OR created_at::date = %(report_date)s
+            )
+            {stock_filter}
+        ORDER BY relevance_score DESC NULLS LAST,
+            published_at DESC NULLS LAST,
+            id DESC
+        LIMIT %(limit)s
+    """
+    params: dict[str, Any] = {"report_date": report_date, "limit": limit}
+    if stock_name:
+        params["stock_name"] = stock_name
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            return _rows_to_dicts(cursor)
+
+
+def build_news_summary_prompt(news_item: dict[str, Any]) -> str:
+    return f"""
+아래 뉴스 정보를 바탕으로 한국어 1~2문장 요약을 작성하세요.
+투자 추천이나 가격 전망은 하지 말고, 뉴스에서 확인되는 사실과 의미만 간결하게 요약하세요.
+
+반드시 아래 JSON 형식으로만 답하세요.
+{{
+  "summary": "..."
+}}
+
+종목: {_to_text(news_item.get("stock_name"))}
+제목: {_to_text(news_item.get("title"))}
+설명: {_to_text(news_item.get("description"))}
+검색어: {_to_text(news_item.get("search_term") or news_item.get("search_query"))}
+출처: {_to_text(news_item.get("source"))}
+발행시각: {_to_text(news_item.get("published_at"))}
+""".strip()
+
+
+def build_mock_news_summary(news_item: dict[str, Any]) -> str:
+    title = _to_text(news_item.get("title"))
+    description = _to_text(news_item.get("description"))
+    stock_name = _to_text(news_item.get("stock_name"))
+    if description:
+        return f"{stock_name} 관련 뉴스로, {title} 이슈가 보도됐습니다. {description[:120]}"
+    return f"{stock_name} 관련 뉴스로, {title} 이슈가 확인됐습니다."
+
+
+def run_llm_news_summary(news_item: dict[str, Any]) -> str:
+    result = _run_openai_json_prompt(
+        build_news_summary_prompt(news_item),
+        {"summary"},
+        error_context="뉴스 요약",
+    )
+    return _to_text(result.get("summary"))
+
+
+def update_news_ai_summary(article_id: int, ai_summary: str) -> None:
+    sql = """
+        UPDATE news_article
+        SET ai_summary = %(ai_summary)s
+        WHERE id = %(id)s
+    """
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, {"id": article_id, "ai_summary": ai_summary})
+        connection.commit()
+
+
+def summarize_news_articles(
+    report_date: date,
+    stock_name: str | None = None,
+    limit: int = 100,
+    mock: bool = False,
+) -> dict[str, Any]:
+    news_items = load_news_for_summary(
+        report_date=report_date,
+        stock_name=stock_name,
+        limit=limit,
+    )
+    success_count = 0
+    errors: list[dict[str, str]] = []
+
+    for item in news_items:
+        try:
+            summary = (
+                build_mock_news_summary(item)
+                if mock
+                else run_llm_news_summary(item)
+            )
+            update_news_ai_summary(int(item["id"]), summary)
+            success_count += 1
+        except Exception as error:
+            errors.append(
+                {
+                    "id": str(item.get("id")),
+                    "title": _to_text(item.get("title"))[:80],
+                    "error": str(error),
+                }
+            )
+
+    return {
+        "report_date": report_date,
+        "target_count": len(news_items),
+        "success_count": success_count,
+        "error_count": len(errors),
+        "errors": errors,
     }
 
 
@@ -1277,6 +1409,10 @@ def build_daily_theme_analysis_prompt(
 - 과도한 가격 전망이나 수익률 전망을 피하세요.
 - mock, 테스트, 샘플, 임시 분석이라는 표현을 절대 쓰지 마세요.
 - 기존 저장값을 설명하지 말고 새 분석 결과만 작성하세요.
+- top_picks는 당일 500억봉 종목 중 주목도 높은 3개와 선정 이유를 작성하세요.
+- top_picks 선정에는 거래대금, 관련 뉴스 수, relevance_score, 테마 대표성, 종목별 sentiment/confidence를 함께 참고하세요.
+- market_drivers는 개별 종목보다 상위 이슈 중심으로 작성하세요.
+- market_drivers에는 정책, 산업, 글로벌 기업, 수급, 실적 기대감 등 시장을 움직인 핵심 요인을 요약하세요.
 
 반드시 아래 JSON 형식으로만 답하세요. JSON 앞뒤에 설명, 마크다운, 코드블록을 붙이지 마세요.
 confidence_score를 제외한 모든 필드는 배열이나 객체가 아니라 문자열로 반환하세요.
@@ -1286,7 +1422,9 @@ theme_rankings도 배열이 아니라 "1위 반도체: ...\n2위 AI/로봇: ..."
   "strong_themes": "...",
   "theme_rankings": "1위 반도체: ...\n2위 AI/로봇: ...",
   "key_issues": "...",
+  "market_drivers": "...",
   "leading_stocks": "...",
+  "top_picks": "1. 종목명: 선정 이유...\n2. 종목명: 선정 이유...\n3. 종목명: 선정 이유...",
   "risk_points": "...",
   "tomorrow_checkpoints": "...",
   "confidence_score": 0
@@ -1331,6 +1469,26 @@ def build_mock_daily_theme_analysis(
         for group in top_groups
         if group["top_news"]
     ) or "- 관련 뉴스 부족"
+    top_picks = "\n".join(
+        (
+            f"{index}. {stock['stock_name']}: "
+            f"{group['theme']} 대표 흐름, 거래대금 "
+            f"{stock.get('trading_value') or 0:,.0f}, "
+            f"관련 뉴스 {group['news_count']}건 기준으로 관찰 대상입니다."
+        )
+        for index, (group, stock) in enumerate(
+            [
+                (group, stock)
+                for group in top_groups
+                for stock in group["leading_stocks"][:1]
+            ][:3],
+            start=1,
+        )
+    ) or "- 선정 대상 부족"
+    market_drivers = "\n".join(
+        f"- {group['theme']}: {', '.join(group['keywords'][:5]) or '키워드 부족'}"
+        for group in top_groups
+    ) or "- 집계된 시장 핵심 이슈 없음"
 
     confidence_score = min(85, 35 + len(theme_groups) * 3 + total_news)
 
@@ -1342,7 +1500,9 @@ def build_mock_daily_theme_analysis(
         "strong_themes": ", ".join(theme_names) or "집계된 테마 없음",
         "theme_rankings": rankings,
         "key_issues": key_issues,
+        "market_drivers": market_drivers,
         "leading_stocks": leading_stocks,
+        "top_picks": top_picks,
         "risk_points": "mock 분석이므로 실제 뉴스 본문, 공시, 수급 데이터와 함께 추가 확인이 필요합니다.",
         "tomorrow_checkpoints": "상위 테마의 후속 뉴스, 거래대금 지속 여부, 관련 종목 확산 여부를 확인하세요.",
         "confidence_score": confidence_score,
@@ -1395,7 +1555,9 @@ def save_daily_theme_analysis(
             strong_themes,
             theme_rankings,
             key_issues,
+            market_drivers,
             leading_stocks,
+            top_picks,
             risk_points,
             tomorrow_checkpoints,
             confidence_score,
@@ -1409,7 +1571,9 @@ def save_daily_theme_analysis(
             %(strong_themes)s,
             %(theme_rankings)s,
             %(key_issues)s,
+            %(market_drivers)s,
             %(leading_stocks)s,
+            %(top_picks)s,
             %(risk_points)s,
             %(tomorrow_checkpoints)s,
             %(confidence_score)s,
@@ -1423,7 +1587,9 @@ def save_daily_theme_analysis(
             strong_themes = EXCLUDED.strong_themes,
             theme_rankings = EXCLUDED.theme_rankings,
             key_issues = EXCLUDED.key_issues,
+            market_drivers = EXCLUDED.market_drivers,
             leading_stocks = EXCLUDED.leading_stocks,
+            top_picks = EXCLUDED.top_picks,
             risk_points = EXCLUDED.risk_points,
             tomorrow_checkpoints = EXCLUDED.tomorrow_checkpoints,
             confidence_score = EXCLUDED.confidence_score,
