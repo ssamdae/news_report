@@ -148,6 +148,23 @@ def load_analysis_stock_names() -> pd.DataFrame:
     return read_sql(query)
 
 
+def load_analysis_by_report_date(report_date: date) -> pd.DataFrame:
+    query = """
+        SELECT
+            stock_name,
+            report_date,
+            analysis_date,
+            summary,
+            sentiment,
+            confidence_score,
+            source_news_count
+        FROM stock_analysis
+        WHERE report_date = %(report_date)s
+        ORDER BY confidence_score DESC NULLS LAST, stock_name
+    """
+    return read_sql(query, {"report_date": report_date})
+
+
 def display_news_table(news: pd.DataFrame) -> None:
     if news.empty:
         st.info("저장된 뉴스가 없습니다.")
@@ -322,6 +339,43 @@ else:
 
 st.divider()
 st.subheader("AI 분석")
+
+try:
+    date_analysis = load_analysis_by_report_date(selected_date)
+except Exception as error:
+    st.warning(f"선택 날짜 AI 분석 현황 조회 중 오류가 발생했습니다: {error}")
+else:
+    st.markdown("#### 선택 날짜 분석 현황")
+    if date_analysis.empty:
+        st.info("선택한 날짜에 저장된 AI 분석 결과가 없습니다.")
+    else:
+        analysis_summary_cols = st.columns(3)
+        analysis_summary_cols[0].metric("분석 완료 종목", f"{len(date_analysis):,}")
+        analysis_summary_cols[1].metric(
+            "평균 confidence",
+            f"{float(date_analysis['confidence_score'].mean()):.2f}",
+        )
+        analysis_summary_cols[2].metric(
+            "사용 뉴스 합계",
+            f"{int(date_analysis['source_news_count'].sum()):,}",
+        )
+
+        display_date_analysis = date_analysis.rename(
+            columns={
+                "stock_name": "종목명",
+                "report_date": "분석일",
+                "analysis_date": "생성시각",
+                "summary": "요약",
+                "sentiment": "sentiment",
+                "confidence_score": "confidence",
+                "source_news_count": "뉴스수",
+            }
+        )
+        st.dataframe(
+            display_date_analysis,
+            use_container_width=True,
+            hide_index=True,
+        )
 
 try:
     analysis_stocks = load_analysis_stock_names()

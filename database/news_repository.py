@@ -7,7 +7,7 @@ from typing import Any
 
 import pandas as pd
 
-from database.db import get_connection
+from database.db import get_connection, load_environment
 
 
 NEWS_COLUMNS = [
@@ -61,6 +61,14 @@ ANALYSIS_COLUMNS = [
     "sentiment",
     "confidence_score",
 ]
+
+REQUIRED_ANALYSIS_FIELDS = set(ANALYSIS_COLUMNS)
+
+
+class StockAnalysisLlmError(RuntimeError):
+    def __init__(self, message: str, raw_response: str | None = None) -> None:
+        super().__init__(message)
+        self.raw_response = raw_response
 
 
 def _clean_value(value: Any) -> Any:
@@ -494,6 +502,9 @@ def build_stock_analysis_prompt(
     return f"""
 아래 뉴스는 {stock_name} 종목과 관련성이 있다고 필터링된 뉴스입니다.
 투자 추천이 아니라 뉴스 기반 분석으로만 작성하세요.
+매수, 매도, 보유 같은 투자 행동을 권하지 마세요.
+뉴스로 확인되지 않은 내용은 단정하지 말고 불확실하다고 표현하세요.
+과도한 확신이나 가격 전망을 피하고, 관찰 가능한 이슈와 체크포인트 중심으로 작성하세요.
 
 분석 항목:
 - 한줄 요약
@@ -503,9 +514,9 @@ def build_stock_analysis_prompt(
 - 관련 테마
 - 내일 체크포인트
 - 종합 분위기(sentiment): positive / neutral / negative 중 하나
-- 신뢰도 점수(confidence_score): 0~100
+- 신뢰도 점수(confidence_score): 0~100, 뉴스 수와 구체성에 따라 보수적으로 산정
 
-반드시 아래 JSON 형식으로만 답하세요.
+반드시 아래 JSON 형식으로만 답하세요. JSON 앞뒤에 설명, 마크다운, 코드블록을 붙이지 마세요.
 {{
   "summary": "...",
   "key_issues": "...",
@@ -552,17 +563,24 @@ def build_mock_stock_analysis(
     }
 
 
-def call_stock_analysis_llm(prompt: str) -> dict[str, Any]:
+def run_llm_stock_analysis(prompt: str) -> dict[str, Any]:
+    load_environment()
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not set. Use --mock to run without LLM.")
+        raise StockAnalysisLlmError(
+            "OPENAI_API_KEY가 설정되어 있지 않습니다. "
+            ".env에 OPENAI_API_KEY를 설정하거나 --mock 옵션을 사용하세요."
+        )
 
     request_body = {
         "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         "messages": [
             {
                 "role": "system",
-                "content": "You produce concise Korean stock news analysis as JSON.",
+                "content": (
+                    "You produce concise Korean stock news analysis as strict JSON. "
+                    "Do not provide investment recommendations."
+                ),
             },
             {"role": "user", "content": prompt},
         ],
@@ -581,12 +599,57 @@ def call_stock_analysis_llm(prompt: str) -> dict[str, Any]:
 
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+            response_text = response.read().decode("utf-8")
+            payload = json.loads(response_text)
+    except urllib.error.HTTPError as error:
+        error_body = error.read().decode("utf-8", errors="replace")
+        raise StockAnalysisLlmError(
+            f"OpenAI API 요청 실패: HTTP {error.code}",
+            raw_response=error_body,
+        ) from error
     except urllib.error.URLError as error:
-        raise RuntimeError(f"OpenAI API request failed: {error}") from error
+        raise StockAnalysisLlmError(f"OpenAI API 요청 실패: {error}") from error
+    except json.JSONDecodeError as error:
+        raise StockAnalysisLlmError(
+            "OpenAI API 응답 JSON 파싱에 실패했습니다.",
+            raw_response=locals().get("response_text", ""),
+        ) from error
 
-    content = payload["choices"][0]["message"]["content"]
-    return json.loads(content)
+    try:
+        content = payload["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as error:
+        raise StockAnalysisLlmError(
+            "OpenAI API 응답 구조가 예상과 다릅니다.",
+            raw_response=json.dumps(payload, ensure_ascii=False)[:1000],
+        ) from error
+
+    try:
+        analysis = json.loads(content)
+    except json.JSONDecodeError as error:
+        raise StockAnalysisLlmError(
+            "LLM 분석 결과 JSON 파싱에 실패했습니다.",
+            raw_response=content,
+        ) from error
+
+    if not isinstance(analysis, dict):
+        raise StockAnalysisLlmError(
+            "LLM 분석 결과가 JSON object가 아닙니다.",
+            raw_response=content,
+        )
+
+    missing_fields = REQUIRED_ANALYSIS_FIELDS - set(analysis)
+    if missing_fields:
+        raise StockAnalysisLlmError(
+            "LLM 분석 결과에 필수 필드가 없습니다: "
+            + ", ".join(sorted(missing_fields)),
+            raw_response=content,
+        )
+
+    return analysis
+
+
+def call_stock_analysis_llm(prompt: str) -> dict[str, Any]:
+    return run_llm_stock_analysis(prompt)
 
 
 def normalize_stock_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
@@ -698,6 +761,59 @@ def analyze_stock_news(
     }
 
 
+def load_signal_stock_names_for_analysis(report_date: date) -> list[str]:
+    sql = """
+        SELECT DISTINCT
+            m.stock_name
+        FROM signal_event e
+        JOIN stock_master m
+            ON m.stock_code = e.stock_code
+        WHERE e.signal_date = %(report_date)s
+            AND e.signal_name = '500억봉'
+        ORDER BY m.stock_name
+    """
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, {"report_date": report_date})
+            rows = cursor.fetchall()
+
+    return [row[0] for row in rows if row[0]]
+
+
+def analyze_signal_stocks(
+    report_date: date,
+    limit: int = 20,
+    mock: bool = False,
+) -> dict[str, Any]:
+    stock_names = load_signal_stock_names_for_analysis(report_date)
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+
+    for stock_name in stock_names:
+        try:
+            result = analyze_stock_news(
+                stock_name=stock_name,
+                report_date=report_date,
+                limit=limit,
+                mock=mock,
+            )
+        except Exception as error:
+            errors.append({"stock_name": stock_name, "error": str(error)})
+            continue
+
+        results.append(result)
+
+    return {
+        "report_date": report_date,
+        "target_count": len(stock_names),
+        "success_count": len(results),
+        "error_count": len(errors),
+        "results": results,
+        "errors": errors,
+    }
+
+
 def get_stock_analysis(
     stock_name: str,
     report_date: date | None = None,
@@ -748,6 +864,25 @@ def get_stock_analysis(
 
     with get_connection() as connection:
         return pd.read_sql_query(sql, connection, params=params)
+
+
+def get_stock_analysis_by_report_date(report_date: date) -> pd.DataFrame:
+    sql = """
+        SELECT
+            a.stock_name,
+            a.report_date,
+            a.analysis_date,
+            a.summary,
+            a.sentiment,
+            a.confidence_score,
+            a.source_news_count
+        FROM stock_analysis a
+        WHERE a.report_date = %(report_date)s
+        ORDER BY a.confidence_score DESC NULLS LAST, a.stock_name
+    """
+
+    with get_connection() as connection:
+        return pd.read_sql_query(sql, connection, params={"report_date": report_date})
 
 
 def get_relevant_news_for_display(

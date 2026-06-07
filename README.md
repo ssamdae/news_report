@@ -23,6 +23,8 @@ cp .env.example .env
 ```bash
 NAVER_CLIENT_ID=your_naver_client_id
 NAVER_CLIENT_SECRET=your_naver_client_secret
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_MODEL=gpt-4o-mini
 ```
 
 ## 종목 마스터 준비
@@ -90,3 +92,25 @@ export NAVER_REQUEST_SLEEP_SECONDS=0.3
 ```bash
 python3.12 main.py test-db
 ```
+
+## 뉴스 기반 AI 분석
+
+단일 종목 분석:
+
+```bash
+python3.12 main.py analyze-stock --stock-name 삼성전자 --date 2026-06-04
+```
+
+선택 날짜의 500억봉 종목 일괄 분석:
+
+```bash
+python3.12 main.py analyze-signals --date 2026-06-04
+```
+
+OpenAI API를 호출하지 않고 저장/화면 흐름만 확인하려면 `--mock` 옵션을 사용합니다.
+
+```bash
+python3.12 main.py analyze-signals --date 2026-06-04 --mock
+```
+
+분석 결과는 `stock_analysis` 테이블에 저장되며 Streamlit 대시보드의 `AI 분석` 영역에서 선택 날짜별 현황과 종목별 상세 내용을 확인할 수 있습니다.

@@ -382,14 +382,24 @@ def analyze_stock_command(
     limit: int,
     mock: bool,
 ) -> None:
-    from database.news_repository import analyze_stock_news
+    from database.news_repository import StockAnalysisLlmError, analyze_stock_news
 
-    result = analyze_stock_news(
-        stock_name=stock_name,
-        report_date=report_date,
-        limit=limit,
-        mock=mock,
-    )
+    try:
+        result = analyze_stock_news(
+            stock_name=stock_name,
+            report_date=report_date,
+            limit=limit,
+            mock=mock,
+        )
+    except StockAnalysisLlmError as error:
+        print(f"AI 분석 실패: {error}")
+        if error.raw_response:
+            preview = error.raw_response[:500]
+            suffix = "..." if len(error.raw_response) > 500 else ""
+            print(f"LLM 원문 응답 일부: {preview}{suffix}")
+        print("분석 결과를 저장하지 않았습니다.")
+        return
+
     summary = result.get("summary") or ""
     preview = summary[:120] + ("..." if len(summary) > 120 else "")
 
@@ -399,6 +409,35 @@ def analyze_stock_command(
     print(f"sentiment: {result['sentiment']}")
     print(f"confidence_score: {result['confidence_score']:.2f}")
     print(f"summary: {preview}")
+
+
+def analyze_signals_command(report_date: date, limit: int, mock: bool) -> None:
+    from database.news_repository import analyze_signal_stocks
+
+    result = analyze_signal_stocks(report_date=report_date, limit=limit, mock=mock)
+
+    print(f"분석 기준일: {result['report_date']}")
+    print(f"대상 종목 수: {result['target_count']}건")
+    print(f"분석 성공: {result['success_count']}건")
+    print(f"분석 실패: {result['error_count']}건")
+
+    if result["results"]:
+        print("분석 결과:")
+        for row in result["results"]:
+            summary = row.get("summary") or ""
+            preview = summary[:80] + ("..." if len(summary) > 80 else "")
+            print(
+                f"- {row['stock_name']}: "
+                f"{row['sentiment']} / "
+                f"{row['confidence_score']:.2f} / "
+                f"뉴스 {row['source_news_count']}건 / "
+                f"{preview}"
+            )
+
+    if result["errors"]:
+        print("오류 목록:")
+        for row in result["errors"]:
+            print(f"- {row['stock_name']}: {row['error']}")
 
 
 def main() -> None:
@@ -513,6 +552,14 @@ def main() -> None:
             parser.error("analyze-stock requires --stock-name")
         analyze_stock_command(
             stock_name=args.stock_name,
+            report_date=_parse_date(args.date),
+            limit=args.limit or 20,
+            mock=args.mock,
+        )
+        return
+
+    if args.command == "analyze-signals":
+        analyze_signals_command(
             report_date=_parse_date(args.date),
             limit=args.limit or 20,
             mock=args.mock,
