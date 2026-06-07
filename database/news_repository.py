@@ -865,21 +865,18 @@ def analyze_signal_stocks(
 def get_signal_stocks_by_date(report_date: date) -> list[dict[str, Any]]:
     sql = """
         SELECT
-            e.stock_code,
-            m.stock_name,
-            e.signal_date AS report_date,
-            m.market,
-            e.trading_value,
-            e.close_price,
-            e.volume,
-            e.condition_version,
-            e.created_at
-        FROM signal_event e
-        JOIN stock_master m
-            ON m.stock_code = e.stock_code
-        WHERE e.signal_date = %(report_date)s
-            AND e.signal_name = '500억봉'
-        ORDER BY e.trading_value DESC NULLS LAST, e.stock_code
+            se.stock_code,
+            sm.stock_name,
+            se.signal_date AS report_date,
+            se.signal_name,
+            se.trading_value,
+            se.close_price,
+            se.volume
+        FROM signal_event se
+        JOIN stock_master sm
+            ON se.stock_code = sm.stock_code
+        WHERE se.signal_date = %(report_date)s
+        ORDER BY se.trading_value DESC NULLS LAST, sm.stock_name
     """
 
     with get_connection() as connection:

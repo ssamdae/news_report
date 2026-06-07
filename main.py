@@ -469,6 +469,11 @@ def analyze_daily_themes_command(
 
     print(f"분석일: {result['report_date']}")
     print(f"500억봉 종목 수: {result['source_stock_count']}건")
+    if result["source_stock_count"] == 0:
+        print(
+            "해당 날짜의 signal_event 데이터가 없습니다. "
+            f"python main.py run --date {result['report_date']} 실행 여부를 확인하세요."
+        )
     print(f"관련 뉴스 수: {result['source_news_count']}건")
     print(f"confidence_score: {result['confidence_score']:.2f}")
     print(f"market_summary: {preview}")
