@@ -376,6 +376,31 @@ def score_news_relevance_command(stock_name: str, limit: int | None = None) -> N
     print(f"평균 relevance_score: {result['average_relevance_score']:.2f}")
 
 
+def analyze_stock_command(
+    stock_name: str,
+    report_date: date,
+    limit: int,
+    mock: bool,
+) -> None:
+    from database.news_repository import analyze_stock_news
+
+    result = analyze_stock_news(
+        stock_name=stock_name,
+        report_date=report_date,
+        limit=limit,
+        mock=mock,
+    )
+    summary = result.get("summary") or ""
+    preview = summary[:120] + ("..." if len(summary) > 120 else "")
+
+    print(f"대상 종목: {result['stock_name']}")
+    print(f"분석 기준일: {result['report_date']}")
+    print(f"사용 뉴스 수: {result['source_news_count']}건")
+    print(f"sentiment: {result['sentiment']}")
+    print(f"confidence_score: {result['confidence_score']:.2f}")
+    print(f"summary: {preview}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stock research system")
     parser.add_argument("command", nargs="?", help="Command to run")
@@ -409,6 +434,11 @@ def main() -> None:
         type=int,
         default=5,
         help="Number of PDF pages to inspect for format detection",
+    )
+    parser.add_argument(
+        "--mock",
+        action="store_true",
+        help="Use mock output for analyze-stock without calling an LLM",
     )
     args = parser.parse_args()
 
@@ -476,6 +506,17 @@ def main() -> None:
         if not args.stock_name:
             parser.error("score-news-relevance requires --stock-name")
         score_news_relevance_command(args.stock_name, limit=args.limit)
+        return
+
+    if args.command == "analyze-stock":
+        if not args.stock_name:
+            parser.error("analyze-stock requires --stock-name")
+        analyze_stock_command(
+            stock_name=args.stock_name,
+            report_date=_parse_date(args.date),
+            limit=args.limit or 20,
+            mock=args.mock,
+        )
         return
 
     print("Stock research system scaffold")

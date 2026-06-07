@@ -1,3 +1,8 @@
+import json
+import os
+import urllib.error
+import urllib.request
+from datetime import date
 from typing import Any
 
 import pandas as pd
@@ -45,6 +50,17 @@ TERM_TYPE_WEIGHTS = {
     "SECONDARY_THEME": 5,
     "RELATED_THEME": 0,
 }
+
+ANALYSIS_COLUMNS = [
+    "summary",
+    "key_issues",
+    "positive_points",
+    "risk_points",
+    "theme_points",
+    "tomorrow_checkpoints",
+    "sentiment",
+    "confidence_score",
+]
 
 
 def _clean_value(value: Any) -> Any:
@@ -407,4 +423,276 @@ def score_news_relevance(stock_name: str, limit: int | None = None) -> dict[str,
         "relevant_count": relevant_count,
         "irrelevant_count": irrelevant_count,
         "average_relevance_score": average_score,
+    }
+
+
+def get_relevant_news_for_analysis(
+    stock_name: str,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    sql = """
+        SELECT
+            title,
+            description,
+            link,
+            published_at,
+            search_term,
+            search_query,
+            relevance_score
+        FROM news_article
+        WHERE stock_name = %(stock_name)s
+            AND is_relevant = TRUE
+        ORDER BY relevance_score DESC NULLS LAST,
+            published_at DESC NULLS LAST,
+            id DESC
+        LIMIT %(limit)s
+    """
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, {"stock_name": stock_name, "limit": limit})
+            rows = cursor.fetchall()
+
+    return [
+        {
+            "title": row[0],
+            "description": row[1],
+            "link": row[2],
+            "published_at": row[3],
+            "search_term": row[4],
+            "search_query": row[5],
+            "relevance_score": row[6],
+        }
+        for row in rows
+    ]
+
+
+def build_stock_analysis_prompt(
+    stock_name: str,
+    news_items: list[dict[str, Any]],
+) -> str:
+    news_lines = []
+    for index, item in enumerate(news_items, start=1):
+        published_at = item.get("published_at") or "-"
+        title = item.get("title") or ""
+        description = item.get("description") or ""
+        search_query = item.get("search_query") or item.get("search_term") or "-"
+        relevance_score = item.get("relevance_score")
+        news_lines.append(
+            "\n".join(
+                [
+                    f"{index}. 제목: {title}",
+                    f"   설명: {description}",
+                    f"   발행일: {published_at}",
+                    f"   검색쿼리: {search_query}",
+                    f"   관련성점수: {relevance_score}",
+                ]
+            )
+        )
+
+    news_text = "\n\n".join(news_lines) or "관련 뉴스 없음"
+    return f"""
+아래 뉴스는 {stock_name} 종목과 관련성이 있다고 필터링된 뉴스입니다.
+투자 추천이 아니라 뉴스 기반 분석으로만 작성하세요.
+
+분석 항목:
+- 한줄 요약
+- 핵심 이슈
+- 상승/관심 요인
+- 리스크 요인
+- 관련 테마
+- 내일 체크포인트
+- 종합 분위기(sentiment): positive / neutral / negative 중 하나
+- 신뢰도 점수(confidence_score): 0~100
+
+반드시 아래 JSON 형식으로만 답하세요.
+{{
+  "summary": "...",
+  "key_issues": "...",
+  "positive_points": "...",
+  "risk_points": "...",
+  "theme_points": "...",
+  "tomorrow_checkpoints": "...",
+  "sentiment": "positive|neutral|negative",
+  "confidence_score": 0
+}}
+
+뉴스 목록:
+{news_text}
+""".strip()
+
+
+def build_mock_stock_analysis(
+    stock_name: str,
+    news_items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    titles = [item.get("title") or "" for item in news_items if item.get("title")]
+    top_titles = titles[:5]
+    issue_text = "\n".join(f"- {title}" for title in top_titles) or "- 관련 뉴스 없음"
+    query_terms = sorted(
+        {
+            str(item.get("search_term")).strip()
+            for item in news_items
+            if item.get("search_term")
+        }
+    )
+    theme_text = ", ".join(query_terms[:8]) if query_terms else "관련 검색어 없음"
+    source_count = len(news_items)
+    confidence_score = min(80, 40 + source_count * 2)
+
+    return {
+        "summary": f"{stock_name} 관련 뉴스 {source_count}건을 기준으로 주요 이슈를 점검했습니다.",
+        "key_issues": issue_text,
+        "positive_points": "관련 뉴스 제목에서 확인되는 관심 요인을 중심으로 후속 보도가 이어지는지 확인이 필요합니다.",
+        "risk_points": "뉴스 기반 임시 분석이므로 실제 실적, 수급, 공시와 함께 교차 확인해야 합니다.",
+        "theme_points": theme_text,
+        "tomorrow_checkpoints": "장 시작 전 추가 공시, 주요 고객사/테마 뉴스, 거래대금 변화를 확인하세요.",
+        "sentiment": "neutral",
+        "confidence_score": confidence_score,
+    }
+
+
+def call_stock_analysis_llm(prompt: str) -> dict[str, Any]:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not set. Use --mock to run without LLM.")
+
+    request_body = {
+        "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        "messages": [
+            {
+                "role": "system",
+                "content": "You produce concise Korean stock news analysis as JSON.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+    }
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(request_body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.URLError as error:
+        raise RuntimeError(f"OpenAI API request failed: {error}") from error
+
+    content = payload["choices"][0]["message"]["content"]
+    return json.loads(content)
+
+
+def normalize_stock_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
+    normalized = {column: analysis.get(column) for column in ANALYSIS_COLUMNS}
+    sentiment = (normalized.get("sentiment") or "neutral").strip().lower()
+    if sentiment not in {"positive", "neutral", "negative"}:
+        sentiment = "neutral"
+    normalized["sentiment"] = sentiment
+
+    try:
+        confidence_score = float(normalized.get("confidence_score") or 0)
+    except (TypeError, ValueError):
+        confidence_score = 0
+    normalized["confidence_score"] = max(0, min(100, confidence_score))
+    return normalized
+
+
+def save_stock_analysis(
+    stock_name: str,
+    report_date: date,
+    analysis: dict[str, Any],
+    source_news_count: int,
+) -> None:
+    normalized = normalize_stock_analysis(analysis)
+    sql = """
+        INSERT INTO stock_analysis (
+            stock_name,
+            report_date,
+            analysis_date,
+            summary,
+            key_issues,
+            positive_points,
+            risk_points,
+            theme_points,
+            tomorrow_checkpoints,
+            sentiment,
+            confidence_score,
+            source_news_count,
+            updated_at
+        )
+        VALUES (
+            %(stock_name)s,
+            %(report_date)s,
+            NOW(),
+            %(summary)s,
+            %(key_issues)s,
+            %(positive_points)s,
+            %(risk_points)s,
+            %(theme_points)s,
+            %(tomorrow_checkpoints)s,
+            %(sentiment)s,
+            %(confidence_score)s,
+            %(source_news_count)s,
+            NOW()
+        )
+        ON CONFLICT (stock_name, report_date) DO UPDATE
+        SET
+            analysis_date = NOW(),
+            summary = EXCLUDED.summary,
+            key_issues = EXCLUDED.key_issues,
+            positive_points = EXCLUDED.positive_points,
+            risk_points = EXCLUDED.risk_points,
+            theme_points = EXCLUDED.theme_points,
+            tomorrow_checkpoints = EXCLUDED.tomorrow_checkpoints,
+            sentiment = EXCLUDED.sentiment,
+            confidence_score = EXCLUDED.confidence_score,
+            source_news_count = EXCLUDED.source_news_count,
+            updated_at = NOW()
+    """
+    params = {
+        "stock_name": stock_name,
+        "report_date": report_date,
+        "source_news_count": source_news_count,
+        **normalized,
+    }
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, params)
+        connection.commit()
+
+
+def analyze_stock_news(
+    stock_name: str,
+    report_date: date,
+    limit: int = 20,
+    mock: bool = False,
+) -> dict[str, Any]:
+    news_items = get_relevant_news_for_analysis(stock_name=stock_name, limit=limit)
+    prompt = build_stock_analysis_prompt(stock_name, news_items)
+    analysis = (
+        build_mock_stock_analysis(stock_name, news_items)
+        if mock
+        else call_stock_analysis_llm(prompt)
+    )
+    normalized = normalize_stock_analysis(analysis)
+    save_stock_analysis(
+        stock_name=stock_name,
+        report_date=report_date,
+        analysis=normalized,
+        source_news_count=len(news_items),
+    )
+
+    return {
+        "stock_name": stock_name,
+        "report_date": report_date,
+        "source_news_count": len(news_items),
+        **normalized,
     }
