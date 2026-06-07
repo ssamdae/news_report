@@ -546,6 +546,68 @@ def generate_report_command(report_date: date) -> None:
     print(output_path)
 
 
+def _print_pipeline_failure(step_label: str, error: Exception) -> None:
+    import traceback
+
+    print(f"{step_label} 실패: {error}")
+    traceback.print_exc()
+
+
+def run_daily_report_command(
+    report_date: date,
+    mock: bool = False,
+    limit_stocks: int | None = None,
+) -> None:
+    from database.news_repository import analyze_daily_themes, analyze_signal_event_stocks
+    from report.report_generator import generate_daily_report
+
+    current_step = "준비"
+    try:
+        current_step = "[1/4] 주가 수집 및 500억봉 탐지"
+        print("[1/4] 주가 수집 및 500억봉 탐지 시작")
+        run(report_date, limit_stocks=limit_stocks)
+        print("[1/4] 완료")
+
+        current_step = "[2/4] 500억봉 종목 AI 분석"
+        print("[2/4] 500억봉 종목 AI 분석 시작")
+        signal_result = analyze_signal_event_stocks(
+            report_date=report_date,
+            limit_news=20,
+            mock=mock,
+        )
+        print(
+            "[2/4] 완료 "
+            f"(대상 {signal_result['target_count']}건, "
+            f"성공 {signal_result['success_count']}건, "
+            f"스킵 {signal_result['skip_count']}건, "
+            f"실패 {signal_result['error_count']}건)"
+        )
+
+        current_step = "[3/4] 일일 테마 분석"
+        print("[3/4] 일일 테마 분석 시작")
+        theme_result = analyze_daily_themes(
+            report_date=report_date,
+            limit_news_per_stock=5,
+            mock=mock,
+        )
+        print(
+            "[3/4] 완료 "
+            f"(500억봉 {theme_result['source_stock_count']}건, "
+            f"뉴스 {theme_result['source_news_count']}건)"
+        )
+
+        current_step = "[4/4] PDF 생성"
+        print("[4/4] PDF 생성 시작")
+        output_path = generate_daily_report(report_date)
+        print(f"[4/4] 완료: {output_path}")
+    except Exception as error:
+        _print_pipeline_failure(current_step, error)
+        raise SystemExit(1) from error
+
+    print("일일 리포트 생성 완료:")
+    print(output_path)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stock research system")
     parser.add_argument("command", nargs="?", help="Command to run")
@@ -611,6 +673,16 @@ def main() -> None:
 
     if args.command == "run":
         run(_parse_date(args.date), limit_stocks=args.limit_stocks)
+        return
+
+    if args.command == "run-daily-report":
+        if not args.date:
+            parser.error("run-daily-report requires --date")
+        run_daily_report_command(
+            report_date=_parse_date(args.date),
+            mock=args.mock,
+            limit_stocks=args.limit_stocks,
+        )
         return
 
     if args.command == "sync-stock-master":
