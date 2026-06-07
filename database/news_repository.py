@@ -1416,6 +1416,7 @@ def build_daily_theme_analysis_prompt(
 
 반드시 아래 JSON 형식으로만 답하세요. JSON 앞뒤에 설명, 마크다운, 코드블록을 붙이지 마세요.
 confidence_score를 제외한 모든 필드는 배열이나 객체가 아니라 문자열로 반환하세요.
+confidence_score는 반드시 0 이상 100 이하의 숫자로 반환하세요. 문자열, null, 빈 값, 설명 문장은 허용하지 않습니다.
 theme_rankings도 배열이 아니라 "1위 반도체: ...\n2위 AI/로봇: ..." 형태의 문자열이어야 합니다.
 {{
   "market_summary": "...",
@@ -1427,7 +1428,7 @@ theme_rankings도 배열이 아니라 "1위 반도체: ...\n2위 AI/로봇: ..."
   "top_picks": "1. 종목명: 선정 이유...\n2. 종목명: 선정 이유...\n3. 종목명: 선정 이유...",
   "risk_points": "...",
   "tomorrow_checkpoints": "...",
-  "confidence_score": 0
+  "confidence_score": 70
 }}
 
 테마별 집계 데이터:
@@ -1541,13 +1542,31 @@ def normalize_daily_theme_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _default_daily_theme_confidence(
+    source_stock_count: int,
+    source_news_count: int,
+) -> Decimal:
+    if source_stock_count > 0 and source_news_count > 0:
+        return Decimal("70")
+    if source_stock_count > 0:
+        return Decimal("50")
+    return Decimal("30")
+
+
 def save_daily_theme_analysis(
     report_date: date,
     analysis: dict[str, Any],
     source_stock_count: int,
     source_news_count: int,
-) -> None:
+) -> dict[str, Any]:
     normalized = normalize_daily_theme_analysis(analysis)
+    if normalized["confidence_score"] <= 0:
+        normalized["confidence_score"] = _default_daily_theme_confidence(
+            source_stock_count=source_stock_count,
+            source_news_count=source_news_count,
+        )
+        print(f"confidence_score 보정 적용: {normalized['confidence_score']}")
+
     sql = """
         INSERT INTO daily_theme_analysis (
             report_date,
@@ -1609,6 +1628,8 @@ def save_daily_theme_analysis(
             cursor.execute(sql, params)
         connection.commit()
 
+    return normalized
+
 
 def analyze_daily_themes(
     report_date: date,
@@ -1626,10 +1647,9 @@ def analyze_daily_themes(
         if mock
         else run_llm_daily_theme_analysis(prompt)
     )
-    normalized = normalize_daily_theme_analysis(analysis)
-    save_daily_theme_analysis(
+    normalized = save_daily_theme_analysis(
         report_date=report_date,
-        analysis=normalized,
+        analysis=analysis,
         source_stock_count=source_data["source_stock_count"],
         source_news_count=source_data["source_news_count"],
     )
