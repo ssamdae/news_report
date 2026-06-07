@@ -251,6 +251,17 @@ def _add_report_section(
     story.append(Spacer(1, 6))
 
 
+def _market_strength_text(daily_theme: dict[str, Any]) -> str:
+    parts = []
+    strong_themes = _text(daily_theme.get("strong_themes"))
+    theme_rankings = _text(daily_theme.get("theme_rankings"))
+    if strong_themes != "-":
+        parts.append(strong_themes)
+    if theme_rankings != "-":
+        parts.append(theme_rankings)
+    return "\n\n".join(parts) or "-"
+
+
 def _load_daily_theme_analysis(report_date: date) -> dict[str, Any] | None:
     sql = """
         SELECT
@@ -536,6 +547,7 @@ def generate_daily_report(report_date: date) -> Path:
 
     story.append(Paragraph("시장 요약", styles["heading"]))
     _add_report_section(story, "시장 요약", daily_theme.get("market_summary"), styles)
+    _add_report_section(story, "시장 강도", _market_strength_text(daily_theme), styles)
     _add_report_section(story, "오늘의 TOP PICK 3", daily_theme.get("top_picks"), styles)
     _add_report_section(
         story,
@@ -543,8 +555,6 @@ def generate_daily_report(report_date: date) -> Path:
         daily_theme.get("market_drivers"),
         styles,
     )
-    _add_report_section(story, "강세 테마", daily_theme.get("strong_themes"), styles)
-    _add_report_section(story, "테마 순위", daily_theme.get("theme_rankings"), styles)
     _add_report_section(story, "리스크 요인", daily_theme.get("risk_points"), styles)
     _add_report_section(
         story,

@@ -1246,6 +1246,105 @@ def _load_relevant_news_by_stock(
     return dict(news_by_stock)
 
 
+def _load_stock_knowledge_context(stock_names: list[str]) -> list[dict[str, Any]]:
+    if not stock_names:
+        return []
+
+    sql = """
+        SELECT
+            stock_name,
+            node_type,
+            node_value,
+            relation_type,
+            source,
+            score
+        FROM stock_knowledge_graph
+        WHERE stock_name = ANY(%(stock_names)s)
+        ORDER BY score DESC, stock_name, node_type
+        LIMIT 80
+    """
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, {"stock_names": stock_names})
+            return _rows_to_dicts(cursor)
+
+
+def _load_stock_theme_history_context(stock_names: list[str]) -> list[dict[str, Any]]:
+    if not stock_names:
+        return []
+
+    sql = """
+        SELECT
+            m.stock_name,
+            t.theme_name,
+            m.hit_count,
+            m.avg_change_rate,
+            m.max_change_rate,
+            m.total_trading_value,
+            m.first_seen_date,
+            m.last_seen_date
+        FROM stock_theme_map m
+        JOIN theme_master t
+            ON t.id = m.theme_id
+        WHERE m.stock_name = ANY(%(stock_names)s)
+        ORDER BY m.hit_count DESC, m.total_trading_value DESC NULLS LAST
+        LIMIT 80
+    """
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, {"stock_names": stock_names})
+            return _rows_to_dicts(cursor)
+
+
+def _load_canonical_theme_context() -> list[dict[str, Any]]:
+    sql = """
+        SELECT
+            canonical_name,
+            category_name,
+            description,
+            priority
+        FROM canonical_theme_master
+        WHERE is_active = TRUE
+        ORDER BY priority, canonical_name
+        LIMIT 40
+    """
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql)
+            return _rows_to_dicts(cursor)
+
+
+def _load_pdf_signal_history_context(
+    stock_names: list[str],
+    report_date: date,
+) -> list[dict[str, Any]]:
+    if not stock_names:
+        return []
+
+    sql = """
+        SELECT
+            report_date,
+            theme_name,
+            stock_name,
+            change_rate,
+            trading_value
+        FROM pdf_signal_item
+        WHERE stock_name = ANY(%(stock_names)s)
+            AND (report_date IS NULL OR report_date <= %(report_date)s)
+        ORDER BY report_date DESC NULLS LAST,
+            trading_value DESC NULLS LAST,
+            change_rate DESC NULLS LAST
+        LIMIT 80
+    """
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                sql,
+                {"stock_names": stock_names, "report_date": report_date},
+            )
+            return _rows_to_dicts(cursor)
+
+
 def _choose_stock_theme(
     stock_name: str,
     profile: dict[str, Any] | None,
@@ -1371,6 +1470,15 @@ def load_daily_theme_source_data(
     terms_by_stock = _load_stock_terms(stock_names)
     analyses = _load_stock_analyses(stock_names, report_date)
     news_by_stock = _load_relevant_news_by_stock(stock_names, limit_news_per_stock)
+    market_context = {
+        "stock_knowledge_graph": _load_stock_knowledge_context(stock_names),
+        "stock_theme_map_history": _load_stock_theme_history_context(stock_names),
+        "canonical_themes": _load_canonical_theme_context(),
+        "pdf_signal_history": _load_pdf_signal_history_context(
+            stock_names,
+            report_date,
+        ),
+    }
     theme_groups = _build_daily_theme_groups(
         signal_stocks=signal_stocks,
         profiles=profiles,
@@ -1383,6 +1491,7 @@ def load_daily_theme_source_data(
         "report_date": report_date,
         "signal_stocks": signal_stocks,
         "theme_groups": theme_groups,
+        "market_context": market_context,
         "source_stock_count": len(signal_stocks),
         "source_news_count": sum(len(items) for items in news_by_stock.values()),
     }
@@ -1391,6 +1500,7 @@ def load_daily_theme_source_data(
 def build_daily_theme_analysis_prompt(
     report_date: date,
     grouped_theme_data: list[dict[str, Any]],
+    market_context: dict[str, Any] | None = None,
 ) -> str:
     theme_data_text = json.dumps(
         grouped_theme_data[:15],
@@ -1398,15 +1508,26 @@ def build_daily_theme_analysis_prompt(
         default=str,
         indent=2,
     )
+    context_text = json.dumps(
+        market_context or {},
+        ensure_ascii=False,
+        default=str,
+        indent=2,
+    )
     return f"""
 아래 데이터는 {report_date.isoformat()} 당일 500억봉 종목을 테마별로 묶은 자료입니다.
-뉴스, 종목별 AI 분석, 검색 키워드, 대표 테마 정보를 근거로 당일 강했던 섹터/테마/이슈를 분석하세요.
+뉴스, 종목별 AI 분석, 검색 키워드, 대표 테마, 지식 그래프, 과거 강세 사례를 근거로 당일 시장을 분석하세요.
 
 분석 기준:
 - 투자 추천, 매수/매도/보유 의견을 제시하지 마세요.
-- 뉴스/테마/500억봉 데이터 기반으로만 분석하세요.
-- 당일 주도 테마와 시장 이슈 중심으로 작성하세요.
-- 종목 나열에 그치지 말고 왜 해당 테마가 강했는지 설명하세요.
+- 뉴스/테마/500억봉/지식 그래프/과거 강세 사례 데이터 기반으로만 분석하세요.
+- 테마를 나열하지 말고 왜 시장이 해당 테마를 선택했는지 원인과 자금 흐름 중심으로 설명하세요.
+- 증권사 데일리 시황 코멘트 스타일로 작성하세요.
+- market_summary는 "오늘 시장 한줄 요약" 성격으로 500자~1000자 수준의 완성된 문단으로 작성하세요.
+- strong_themes는 "자금이 몰린 섹터/테마"를 자금 흐름과 연결해 설명하세요.
+- market_drivers는 "시장이 기대하는 핵심 모멘텀"을 정책, 산업, 글로벌 기업, 수급, 실적 기대감 중심으로 작성하세요.
+- tomorrow_checkpoints는 "내일 관전 포인트"로 작성하세요.
+- top_picks는 "주도주 선정 배경" 관점으로 TOP PICK 3와 이유를 작성하세요.
 - 불확실한 내용은 단정하지 말고 불확실하다고 표현하세요.
 - 과도한 가격 전망이나 수익률 전망을 피하세요.
 - mock, 테스트, 샘플, 임시 분석이라는 표현을 절대 쓰지 마세요.
@@ -1435,6 +1556,9 @@ theme_rankings도 배열이 아니라 "1위 반도체: ...\n2위 AI/로봇: ..."
 
 테마별 집계 데이터:
 {theme_data_text}
+
+추가 시장 컨텍스트:
+{context_text}
 """.strip()
 
 
@@ -1643,7 +1767,11 @@ def analyze_daily_themes(
         limit_news_per_stock=limit_news_per_stock,
     )
     theme_groups = source_data["theme_groups"]
-    prompt = build_daily_theme_analysis_prompt(report_date, theme_groups)
+    prompt = build_daily_theme_analysis_prompt(
+        report_date,
+        theme_groups,
+        market_context=source_data["market_context"],
+    )
     analysis = (
         build_mock_daily_theme_analysis(report_date, theme_groups)
         if mock
