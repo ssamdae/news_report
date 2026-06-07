@@ -508,6 +508,14 @@ def analyze_daily_themes_command(
     print(f"market_summary: {preview}")
 
 
+def generate_report_command(report_date: date) -> None:
+    from report.report_generator import generate_daily_report
+
+    output_path = generate_daily_report(report_date)
+    print("PDF 생성 완료:")
+    print(output_path)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stock research system")
     parser.add_argument("command", nargs="?", help="Command to run")
@@ -657,6 +665,12 @@ def main() -> None:
             limit_news_per_stock=args.limit_news_per_stock,
             mock=args.mock,
         )
+        return
+
+    if args.command == "generate-report":
+        if not args.date:
+            parser.error("generate-report requires --date")
+        generate_report_command(_parse_date(args.date))
         return
 
     print("Stock research system scaffold")
