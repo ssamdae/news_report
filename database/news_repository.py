@@ -1275,6 +1275,8 @@ def build_daily_theme_analysis_prompt(
 - 종목 나열에 그치지 말고 왜 해당 테마가 강했는지 설명하세요.
 - 불확실한 내용은 단정하지 말고 불확실하다고 표현하세요.
 - 과도한 가격 전망이나 수익률 전망을 피하세요.
+- mock, 테스트, 샘플, 임시 분석이라는 표현을 절대 쓰지 마세요.
+- 기존 저장값을 설명하지 말고 새 분석 결과만 작성하세요.
 
 반드시 아래 JSON 형식으로만 답하세요. JSON 앞뒤에 설명, 마크다운, 코드블록을 붙이지 마세요.
 confidence_score를 제외한 모든 필드는 배열이나 객체가 아니라 문자열로 반환하세요.
@@ -1363,6 +1365,15 @@ def normalize_daily_theme_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
     for column in DAILY_THEME_ANALYSIS_COLUMNS:
         if column != "confidence_score":
             normalized[column] = _to_text(normalized.get(column))
+
+    if "mock 분석이므로" in normalized["risk_points"]:
+        normalized["risk_points"] = normalized["risk_points"].replace(
+            "mock 분석이므로 ",
+            "",
+        )
+    for column in DAILY_THEME_ANALYSIS_COLUMNS:
+        if column != "confidence_score":
+            normalized[column] = normalized[column].replace("mock 분석", "분석")
 
     confidence_score = _to_decimal_score(normalized.get("confidence_score"))
     confidence_score = max(Decimal("0"), min(Decimal("100"), confidence_score))

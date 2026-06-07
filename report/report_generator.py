@@ -36,13 +36,6 @@ def _text(value: Any) -> str:
     return text or "-"
 
 
-def _short_link(value: Any, max_length: int = 80) -> str:
-    text = _text(value)
-    if len(text) <= max_length:
-        return text
-    return text[: max_length - 3] + "..."
-
-
 def _link_paragraph(url: Any, label: str, style: Any) -> Any:
     from html import escape
 
@@ -101,6 +94,7 @@ def _build_styles(font_name: str) -> dict[str, Any]:
             fontSize=24,
             leading=32,
             spaceAfter=18,
+            alignment=1,
         ),
         "heading": ParagraphStyle(
             "KoreanHeading",
@@ -110,6 +104,15 @@ def _build_styles(font_name: str) -> dict[str, Any]:
             leading=20,
             spaceBefore=12,
             spaceAfter=8,
+        ),
+        "section": ParagraphStyle(
+            "KoreanSection",
+            parent=styles["Heading3"],
+            fontName=font_name,
+            fontSize=12,
+            leading=16,
+            spaceBefore=10,
+            spaceAfter=5,
         ),
         "body": ParagraphStyle(
             "KoreanBody",
@@ -137,6 +140,19 @@ def _paragraph(text: Any, style: Any) -> Any:
 
     escaped = escape(_text(text)).replace("\n", "<br/>")
     return Paragraph(escaped, style)
+
+
+def _add_report_section(
+    story: list[Any],
+    title: str,
+    value: Any,
+    styles: dict[str, Any],
+) -> None:
+    from reportlab.platypus import Paragraph, Spacer
+
+    story.append(Paragraph(title, styles["section"]))
+    story.append(_paragraph(value, styles["body"]))
+    story.append(Spacer(1, 6))
 
 
 def _load_daily_theme_analysis(report_date: date) -> dict[str, Any] | None:
@@ -272,15 +288,6 @@ def get_stock_news_for_report(
     return _fetch_all(fallback_sql, {"stock_name": stock_name, "limit": limit})
 
 
-def _add_key_value_section(story: list[Any], title: str, rows: list[tuple[str, Any]], styles: dict[str, Any]) -> None:
-    from reportlab.platypus import Paragraph, Spacer
-
-    story.append(Paragraph(title, styles["heading"]))
-    for label, value in rows:
-        story.append(_paragraph(f"{label}: {_text(value)}", styles["body"]))
-    story.append(Spacer(1, 8))
-
-
 def _build_signal_table(rows: list[dict[str, Any]], styles: dict[str, Any]) -> Any:
     from reportlab.lib import colors
     from reportlab.platypus import Table, TableStyle
@@ -360,6 +367,22 @@ def _build_news_table(rows: list[dict[str, Any]], styles: dict[str, Any]) -> Any
     return table
 
 
+def _add_separator(story: list[Any]) -> None:
+    from reportlab.lib import colors
+    from reportlab.platypus import HRFlowable, Spacer
+
+    story.append(Spacer(1, 6))
+    story.append(
+        HRFlowable(
+            width="100%",
+            thickness=0.5,
+            color=colors.HexColor("#BDBDBD"),
+            spaceBefore=4,
+            spaceAfter=8,
+        )
+    )
+
+
 def generate_daily_report(report_date: date) -> Path:
     from reportlab.lib.pagesizes import A4
     from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer
@@ -393,17 +416,16 @@ def generate_daily_report(report_date: date) -> Path:
     story.append(_paragraph(f"생성시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles["body"]))
     story.append(Spacer(1, 24))
 
-    _add_key_value_section(
+    story.append(Paragraph("시장 요약", styles["heading"]))
+    _add_report_section(story, "시장 요약", daily_theme.get("market_summary"), styles)
+    _add_report_section(story, "강세 테마", daily_theme.get("strong_themes"), styles)
+    _add_report_section(story, "테마 순위", daily_theme.get("theme_rankings"), styles)
+    _add_report_section(story, "주요 이슈", daily_theme.get("key_issues"), styles)
+    _add_report_section(story, "리스크 요인", daily_theme.get("risk_points"), styles)
+    _add_report_section(
         story,
-        "시장 요약",
-        [
-            ("market_summary", daily_theme.get("market_summary")),
-            ("strong_themes", daily_theme.get("strong_themes")),
-            ("theme_rankings", daily_theme.get("theme_rankings")),
-            ("key_issues", daily_theme.get("key_issues")),
-            ("risk_points", daily_theme.get("risk_points")),
-            ("tomorrow_checkpoints", daily_theme.get("tomorrow_checkpoints")),
-        ],
+        "내일 체크포인트",
+        daily_theme.get("tomorrow_checkpoints"),
         styles,
     )
 
@@ -417,6 +439,7 @@ def generate_daily_report(report_date: date) -> Path:
     story.append(Paragraph("종목별 상세", styles["heading"]))
     if signals:
         for signal in signals:
+            _add_separator(story)
             stock_name = _text(signal.get("stock_name"))
             analysis = analyses_by_stock.get(stock_name)
             title = f"{stock_name} / 대표테마: {_text(signal.get('primary_theme'))}"
@@ -425,22 +448,17 @@ def generate_daily_report(report_date: date) -> Path:
             if analysis is None:
                 story.append(_paragraph("분석 데이터 없음", styles["body"]))
             else:
-                for label in (
-                    "summary",
-                    "key_issues",
-                    "positive_points",
-                    "risk_points",
-                    "theme_points",
-                    "tomorrow_checkpoints",
-                    "sentiment",
-                    "confidence_score",
+                for column, label in (
+                    ("summary", "요약"),
+                    ("key_issues", "핵심 이슈"),
+                    ("positive_points", "긍정 요인"),
+                    ("risk_points", "리스크 요인"),
+                    ("theme_points", "관련 테마"),
+                    ("tomorrow_checkpoints", "내일 체크포인트"),
+                    ("sentiment", "분위기"),
+                    ("confidence_score", "신뢰도"),
                 ):
-                    story.append(
-                        _paragraph(
-                            f"{label}: {_text(analysis.get(label))}",
-                            styles["body"],
-                        )
-                    )
+                    _add_report_section(story, label, analysis.get(column), styles)
 
             story.append(Paragraph("관련 뉴스", styles["heading"]))
             stock_news = get_stock_news_for_report(
