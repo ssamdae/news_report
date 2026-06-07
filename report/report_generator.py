@@ -252,14 +252,41 @@ def _add_report_section(
 
 
 def _market_strength_text(daily_theme: dict[str, Any]) -> str:
-    parts = []
+    try:
+        score = float(daily_theme.get("confidence_score") or 0)
+    except (TypeError, ValueError):
+        score = 0
+
+    if score >= 80:
+        stars = "★★★★★"
+    elif score >= 65:
+        stars = "★★★★☆"
+    elif score >= 50:
+        stars = "★★★☆☆"
+    else:
+        stars = "★★☆☆☆"
+
     strong_themes = _text(daily_theme.get("strong_themes"))
-    theme_rankings = _text(daily_theme.get("theme_rankings"))
-    if strong_themes != "-":
-        parts.append(strong_themes)
-    if theme_rankings != "-":
-        parts.append(theme_rankings)
-    return "\n\n".join(parts) or "-"
+    if strong_themes == "-":
+        return f"{stars}"
+    return f"{stars}\n{strong_themes}"
+
+
+def _top_pick_text(daily_theme: dict[str, Any]) -> str:
+    value = _text(daily_theme.get("top_picks"))
+    if value == "-":
+        return "-"
+    lines = []
+    for line in value.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if ":" in stripped:
+            name, point = stripped.split(":", 1)
+            lines.append(f"{name.strip()}: {point.strip()}")
+        else:
+            lines.append(stripped)
+    return "\n".join(lines[:3]) or value
 
 
 def _load_daily_theme_analysis(report_date: date) -> dict[str, Any] | None:
@@ -488,6 +515,26 @@ def _build_news_table(rows: list[dict[str, Any]], styles: dict[str, Any]) -> Any
     return table
 
 
+def _add_news_cards(story: list[Any], rows: list[dict[str, Any]], styles: dict[str, Any]) -> None:
+    from reportlab.platypus import Paragraph, Spacer
+
+    for index, row in enumerate(rows, start=1):
+        title = _truncate_with_ellipsis(_text(row.get("title")), 70)
+        source = _text(row.get("source"))
+        published_at = _text(row.get("published_at"))
+        score = _format_score(row.get("relevance_score"))
+        story.append(Paragraph(f"{index}. {title}", styles["section"]))
+        story.append(_paragraph(_news_summary_text(row), styles["body"]))
+        story.append(
+            _paragraph(
+                f"{published_at} / 점수 {score} / {source}",
+                styles["small"],
+            )
+        )
+        story.append(_link_paragraph(row.get("link"), "원문", styles["small"]))
+        story.append(Spacer(1, 8))
+
+
 def _add_separator(story: list[Any]) -> None:
     from reportlab.lib import colors
     from reportlab.platypus import HRFlowable, Spacer
@@ -548,20 +595,8 @@ def generate_daily_report(report_date: date) -> Path:
     story.append(Paragraph("시장 요약", styles["heading"]))
     _add_report_section(story, "시장 요약", daily_theme.get("market_summary"), styles)
     _add_report_section(story, "시장 강도", _market_strength_text(daily_theme), styles)
-    _add_report_section(story, "오늘의 TOP PICK 3", daily_theme.get("top_picks"), styles)
-    _add_report_section(
-        story,
-        "시장 핵심 이슈",
-        daily_theme.get("market_drivers"),
-        styles,
-    )
-    _add_report_section(story, "리스크 요인", daily_theme.get("risk_points"), styles)
-    _add_report_section(
-        story,
-        "내일 체크포인트",
-        daily_theme.get("tomorrow_checkpoints"),
-        styles,
-    )
+    _add_report_section(story, "TOP PICK", _top_pick_text(daily_theme), styles)
+    story.append(PageBreak())
 
     if signals:
         story.append(
@@ -575,7 +610,7 @@ def generate_daily_report(report_date: date) -> Path:
     else:
         story.append(Paragraph("500억봉 종목 요약", styles["heading"]))
         story.append(_paragraph("해당 날짜의 signal_event 데이터가 없습니다.", styles["body"]))
-    story.append(PageBreak())
+    story.append(Spacer(1, 16))
 
     story.append(Paragraph("종목별 상세", styles["heading"]))
     if signals:
@@ -590,14 +625,10 @@ def generate_daily_report(report_date: date) -> Path:
                 story.append(_paragraph("분석 데이터 없음", styles["body"]))
             else:
                 for column, label in (
-                    ("summary", "요약"),
-                    ("key_issues", "핵심 이슈"),
+                    ("summary", "한줄 요약"),
                     ("positive_points", "긍정 요인"),
-                    ("risk_points", "리스크 요인"),
-                    ("theme_points", "관련 테마"),
-                    ("tomorrow_checkpoints", "내일 체크포인트"),
-                    ("sentiment", "분위기"),
-                    ("confidence_score", "신뢰도"),
+                    ("risk_points", "리스크"),
+                    ("tomorrow_checkpoints", "내일 체크"),
                 ):
                     _add_report_section(story, label, analysis.get(column), styles)
 
@@ -608,16 +639,17 @@ def generate_daily_report(report_date: date) -> Path:
                 limit=3,
             )
             if stock_news:
-                story.append(_build_news_table(stock_news, styles))
+                _add_news_cards(story, stock_news, styles)
             else:
                 story.append(_paragraph("관련 뉴스 없음", styles["body"]))
             story.append(Spacer(1, 18))
     else:
         story.append(_paragraph("해당 날짜의 signal_event 데이터가 없습니다.", styles["body"]))
 
-    story.append(Paragraph("전체 관련 뉴스 TOP 5", styles["heading"]))
+    story.append(PageBreak())
+    story.append(Paragraph("전체 주요 뉴스", styles["heading"]))
     if news:
-        story.append(_build_news_table(news, styles))
+        _add_news_cards(story, news, styles)
     else:
         story.append(_paragraph("관련 뉴스가 없습니다.", styles["body"]))
 
