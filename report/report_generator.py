@@ -58,11 +58,16 @@ def _format_number(value: Any) -> str:
 def _news_summary_text(row: dict[str, Any]) -> str:
     summary = _text(row.get("ai_summary"))
     if summary != "-":
-        return summary
+        compact = " ".join(summary.replace("\n", " ").split())
+        sentences = compact.split(". ")
+        if len(sentences) > 2:
+            compact = ". ".join(sentences[:2]).rstrip(".") + "."
+        return compact[:120] + ("..." if len(compact) > 120 else "")
     description = _text(row.get("description"))
     if description == "-":
         return ""
-    return description[:140] + ("..." if len(description) > 140 else "")
+    compact = " ".join(description.replace("\n", " ").split())
+    return compact[:120] + ("..." if len(compact) > 120 else "")
 
 
 def _register_korean_font() -> tuple[str, str]:
@@ -71,6 +76,24 @@ def _register_korean_font() -> tuple[str, str]:
     from reportlab.pdfbase.ttfonts import TTFont
 
     font_candidates = [
+        (
+            "NotoSansKR",
+            "fonts/NotoSansKR-Regular.ttf",
+            "NotoSansKRBold",
+            "fonts/NotoSansKR-Bold.ttf",
+        ),
+        (
+            "NotoSansKR",
+            "/usr/share/fonts/truetype/noto/NotoSansKR-Regular.ttf",
+            "NotoSansKRBold",
+            "/usr/share/fonts/truetype/noto/NotoSansKR-Bold.ttf",
+        ),
+        (
+            "NotoSansKR",
+            "/usr/share/fonts/opentype/noto/NotoSansKR-Regular.otf",
+            "NotoSansKRBold",
+            "/usr/share/fonts/opentype/noto/NotoSansKR-Bold.otf",
+        ),
         (
             "NanumGothic",
             "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
@@ -175,9 +198,9 @@ def _build_styles(font_name: str, bold_font_name: str) -> dict[str, Any]:
             "KoreanSmall",
             parent=styles["BodyText"],
             fontName=font_name,
-            fontSize=8,
-            leading=11,
-            spaceAfter=4,
+            fontSize=7,
+            leading=9,
+            spaceAfter=2,
         ),
     }
 
@@ -293,7 +316,7 @@ def _load_relevant_news(report_date: date, limit: int = 5) -> list[dict[str, Any
 def get_stock_news_for_report(
     stock_name: str,
     report_date: date,
-    limit: int = 5,
+    limit: int = 3,
 ) -> list[dict[str, Any]]:
     date_sql = """
         SELECT
@@ -367,15 +390,17 @@ def _build_signal_table(rows: list[dict[str, Any]], styles: dict[str, Any]) -> A
             ]
         )
 
-    table = Table(table_rows, colWidths=[35, 120, 105, 210], repeatRows=1)
+    table = Table(table_rows, colWidths=[30, 115, 95, 230], repeatRows=1)
     table.setStyle(
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D9D9D9")),
                 ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
             ]
         )
     )
@@ -418,8 +443,10 @@ def _build_news_table(rows: list[dict[str, Any]], styles: dict[str, Any]) -> Any
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D9D9D9")),
                 ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
             ]
         )
     )
@@ -529,7 +556,7 @@ def generate_daily_report(report_date: date) -> Path:
             stock_news = get_stock_news_for_report(
                 stock_name=stock_name,
                 report_date=report_date,
-                limit=5,
+                limit=3,
             )
             if stock_news:
                 story.append(_build_news_table(stock_news, styles))

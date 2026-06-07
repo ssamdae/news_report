@@ -539,6 +539,8 @@ def load_news_for_summary(
 def build_news_summary_prompt(news_item: dict[str, Any]) -> str:
     return f"""
 아래 뉴스 정보를 바탕으로 한국어 1~2문장 요약을 작성하세요.
+투자자가 3초 안에 이해할 수 있도록 80자 이내로 요약하세요.
+줄바꿈을 넣지 말고 한 줄로 작성하세요.
 투자 추천이나 가격 전망은 하지 말고, 뉴스에서 확인되는 사실과 의미만 간결하게 요약하세요.
 
 반드시 아래 JSON 형식으로만 답하세요.
