@@ -1,8 +1,12 @@
+from __future__ import annotations
+
 import json
 import os
 import urllib.error
 import urllib.request
+from collections import Counter, defaultdict
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
 import pandas as pd
@@ -64,6 +68,19 @@ ANALYSIS_COLUMNS = [
 
 REQUIRED_ANALYSIS_FIELDS = set(ANALYSIS_COLUMNS)
 
+DAILY_THEME_ANALYSIS_COLUMNS = [
+    "market_summary",
+    "strong_themes",
+    "theme_rankings",
+    "key_issues",
+    "leading_stocks",
+    "risk_points",
+    "tomorrow_checkpoints",
+    "confidence_score",
+]
+
+REQUIRED_DAILY_THEME_ANALYSIS_FIELDS = set(DAILY_THEME_ANALYSIS_COLUMNS)
+
 
 class StockAnalysisLlmError(RuntimeError):
     def __init__(self, message: str, raw_response: str | None = None) -> None:
@@ -77,6 +94,22 @@ def _clean_value(value: Any) -> Any:
     if hasattr(value, "item"):
         return value.item()
     return value
+
+
+def _rows_to_dicts(cursor: Any) -> list[dict[str, Any]]:
+    columns = [description[0] for description in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def calculate_news_relevance(
@@ -563,7 +596,12 @@ def build_mock_stock_analysis(
     }
 
 
-def run_llm_stock_analysis(prompt: str) -> dict[str, Any]:
+def _run_openai_json_prompt(
+    prompt: str,
+    required_fields: set[str],
+    *,
+    error_context: str,
+) -> dict[str, Any]:
     load_environment()
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -604,14 +642,16 @@ def run_llm_stock_analysis(prompt: str) -> dict[str, Any]:
     except urllib.error.HTTPError as error:
         error_body = error.read().decode("utf-8", errors="replace")
         raise StockAnalysisLlmError(
-            f"OpenAI API 요청 실패: HTTP {error.code}",
+            f"{error_context} OpenAI API 요청 실패: HTTP {error.code}",
             raw_response=error_body,
         ) from error
     except urllib.error.URLError as error:
-        raise StockAnalysisLlmError(f"OpenAI API 요청 실패: {error}") from error
+        raise StockAnalysisLlmError(
+            f"{error_context} OpenAI API 요청 실패: {error}"
+        ) from error
     except json.JSONDecodeError as error:
         raise StockAnalysisLlmError(
-            "OpenAI API 응답 JSON 파싱에 실패했습니다.",
+            f"{error_context} OpenAI API 응답 JSON 파싱에 실패했습니다.",
             raw_response=locals().get("response_text", ""),
         ) from error
 
@@ -619,7 +659,7 @@ def run_llm_stock_analysis(prompt: str) -> dict[str, Any]:
         content = payload["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as error:
         raise StockAnalysisLlmError(
-            "OpenAI API 응답 구조가 예상과 다릅니다.",
+            f"{error_context} OpenAI API 응답 구조가 예상과 다릅니다.",
             raw_response=json.dumps(payload, ensure_ascii=False)[:1000],
         ) from error
 
@@ -627,25 +667,33 @@ def run_llm_stock_analysis(prompt: str) -> dict[str, Any]:
         analysis = json.loads(content)
     except json.JSONDecodeError as error:
         raise StockAnalysisLlmError(
-            "LLM 분석 결과 JSON 파싱에 실패했습니다.",
+            f"{error_context} LLM 분석 결과 JSON 파싱에 실패했습니다.",
             raw_response=content,
         ) from error
 
     if not isinstance(analysis, dict):
         raise StockAnalysisLlmError(
-            "LLM 분석 결과가 JSON object가 아닙니다.",
+            f"{error_context} LLM 분석 결과가 JSON object가 아닙니다.",
             raw_response=content,
         )
 
-    missing_fields = REQUIRED_ANALYSIS_FIELDS - set(analysis)
+    missing_fields = required_fields - set(analysis)
     if missing_fields:
         raise StockAnalysisLlmError(
-            "LLM 분석 결과에 필수 필드가 없습니다: "
+            f"{error_context} LLM 분석 결과에 필수 필드가 없습니다: "
             + ", ".join(sorted(missing_fields)),
             raw_response=content,
         )
 
     return analysis
+
+
+def run_llm_stock_analysis(prompt: str) -> dict[str, Any]:
+    return _run_openai_json_prompt(
+        prompt,
+        REQUIRED_ANALYSIS_FIELDS,
+        error_context="종목 분석",
+    )
 
 
 def call_stock_analysis_llm(prompt: str) -> dict[str, Any]:
@@ -811,6 +859,522 @@ def analyze_signal_stocks(
         "error_count": len(errors),
         "results": results,
         "errors": errors,
+    }
+
+
+def get_signal_stocks_by_date(report_date: date) -> list[dict[str, Any]]:
+    sql = """
+        SELECT
+            e.stock_code,
+            m.stock_name,
+            e.signal_date AS report_date,
+            m.market,
+            e.trading_value,
+            e.close_price,
+            e.volume,
+            e.condition_version,
+            e.created_at
+        FROM signal_event e
+        JOIN stock_master m
+            ON m.stock_code = e.stock_code
+        WHERE e.signal_date = %(report_date)s
+            AND e.signal_name = '500억봉'
+        ORDER BY e.trading_value DESC NULLS LAST, e.stock_code
+    """
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, {"report_date": report_date})
+            return _rows_to_dicts(cursor)
+
+
+def _load_stock_profiles(stock_names: list[str]) -> dict[str, dict[str, Any]]:
+    if not stock_names:
+        return {}
+
+    sql = """
+        SELECT
+            stock_name,
+            primary_theme,
+            secondary_theme,
+            related_themes,
+            theme_count,
+            total_hit_count
+        FROM stock_profile
+        WHERE stock_name = ANY(%(stock_names)s)
+    """
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, {"stock_names": stock_names})
+            rows = _rows_to_dicts(cursor)
+
+    return {row["stock_name"]: row for row in rows}
+
+
+def _load_stock_terms(stock_names: list[str]) -> dict[str, list[dict[str, Any]]]:
+    if not stock_names:
+        return {}
+
+    sql = """
+        SELECT
+            stock_name,
+            search_term,
+            term_type,
+            score
+        FROM stock_search_term
+        WHERE stock_name = ANY(%(stock_names)s)
+            AND term_type IN ('PRIMARY_THEME', 'SECONDARY_THEME', 'KEYWORD')
+        ORDER BY stock_name, score DESC, search_term
+    """
+
+    terms_by_stock: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, {"stock_names": stock_names})
+            for row in _rows_to_dicts(cursor):
+                if len(terms_by_stock[row["stock_name"]]) < 10:
+                    terms_by_stock[row["stock_name"]].append(row)
+
+    return dict(terms_by_stock)
+
+
+def _load_stock_analyses(
+    stock_names: list[str],
+    report_date: date,
+) -> dict[str, dict[str, Any]]:
+    if not stock_names:
+        return {}
+
+    sql = """
+        SELECT
+            stock_name,
+            summary,
+            key_issues,
+            positive_points,
+            risk_points,
+            theme_points,
+            sentiment,
+            confidence_score,
+            source_news_count
+        FROM stock_analysis
+        WHERE report_date = %(report_date)s
+            AND stock_name = ANY(%(stock_names)s)
+    """
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                sql,
+                {"stock_names": stock_names, "report_date": report_date},
+            )
+            rows = _rows_to_dicts(cursor)
+
+    return {row["stock_name"]: row for row in rows}
+
+
+def _load_relevant_news_by_stock(
+    stock_names: list[str],
+    limit_per_stock: int,
+) -> dict[str, list[dict[str, Any]]]:
+    if not stock_names:
+        return {}
+
+    sql = """
+        WITH ranked_news AS (
+            SELECT
+                stock_name,
+                title,
+                source,
+                search_term,
+                search_query,
+                relevance_score,
+                published_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY stock_name
+                    ORDER BY relevance_score DESC NULLS LAST,
+                        published_at DESC NULLS LAST,
+                        id DESC
+                ) AS row_number
+            FROM news_article
+            WHERE stock_name = ANY(%(stock_names)s)
+                AND is_relevant = TRUE
+        )
+        SELECT
+            stock_name,
+            title,
+            source,
+            search_term,
+            search_query,
+            relevance_score,
+            published_at
+        FROM ranked_news
+        WHERE row_number <= %(limit_per_stock)s
+        ORDER BY stock_name, relevance_score DESC NULLS LAST,
+            published_at DESC NULLS LAST
+    """
+
+    news_by_stock: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                sql,
+                {
+                    "stock_names": stock_names,
+                    "limit_per_stock": max(1, limit_per_stock),
+                },
+            )
+            for row in _rows_to_dicts(cursor):
+                news_by_stock[row["stock_name"]].append(row)
+
+    return dict(news_by_stock)
+
+
+def _choose_stock_theme(
+    stock_name: str,
+    profile: dict[str, Any] | None,
+    terms: list[dict[str, Any]],
+) -> str:
+    if profile and profile.get("primary_theme"):
+        return str(profile["primary_theme"]).strip()
+
+    for term_type in ("PRIMARY_THEME", "SECONDARY_THEME", "KEYWORD"):
+        for term in terms:
+            if term.get("term_type") == term_type and term.get("search_term"):
+                return str(term["search_term"]).strip()
+
+    return stock_name or "개별주"
+
+
+def _build_daily_theme_groups(
+    signal_stocks: list[dict[str, Any]],
+    profiles: dict[str, dict[str, Any]],
+    terms_by_stock: dict[str, list[dict[str, Any]]],
+    analyses: dict[str, dict[str, Any]],
+    news_by_stock: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+
+    for stock in signal_stocks:
+        stock_name = stock["stock_name"]
+        terms = terms_by_stock.get(stock_name, [])
+        profile = profiles.get(stock_name)
+        analysis = analyses.get(stock_name, {})
+        news_items = news_by_stock.get(stock_name, [])
+        theme = _choose_stock_theme(stock_name, profile, terms)
+
+        group = grouped.setdefault(
+            theme,
+            {
+                "theme": theme,
+                "stocks": [],
+                "keyword_counter": Counter(),
+                "sentiment_counter": Counter(),
+                "news_count": 0,
+                "top_news": [],
+            },
+        )
+
+        group["stocks"].append(
+            {
+                "stock_code": stock.get("stock_code"),
+                "stock_name": stock_name,
+                "market": stock.get("market"),
+                "trading_value": _safe_float(stock.get("trading_value")),
+                "close_price": _safe_float(stock.get("close_price")),
+                "volume": stock.get("volume"),
+                "summary": analysis.get("summary"),
+                "key_issues": analysis.get("key_issues"),
+                "positive_points": analysis.get("positive_points"),
+                "risk_points": analysis.get("risk_points"),
+                "theme_points": analysis.get("theme_points"),
+                "sentiment": analysis.get("sentiment"),
+                "confidence_score": _safe_float(analysis.get("confidence_score")),
+            }
+        )
+
+        for term in terms:
+            keyword = str(term.get("search_term") or "").strip()
+            if keyword:
+                group["keyword_counter"][keyword] += 1
+
+        sentiment = (analysis.get("sentiment") or "unknown").strip()
+        group["sentiment_counter"][sentiment] += 1
+        group["news_count"] += len(news_items)
+        group["top_news"].extend(
+            {
+                "stock_name": stock_name,
+                "title": item.get("title"),
+                "search_query": item.get("search_query") or item.get("search_term"),
+                "relevance_score": _safe_float(item.get("relevance_score")),
+            }
+            for item in news_items
+            if item.get("title")
+        )
+
+    theme_groups = []
+    for group in grouped.values():
+        stocks = sorted(
+            group["stocks"],
+            key=lambda row: row.get("trading_value") or 0,
+            reverse=True,
+        )
+        top_news = sorted(
+            group["top_news"],
+            key=lambda row: row.get("relevance_score") or 0,
+            reverse=True,
+        )
+        theme_groups.append(
+            {
+                "theme": group["theme"],
+                "stock_count": len(stocks),
+                "leading_stocks": stocks[:8],
+                "keywords": [
+                    keyword for keyword, _count in group["keyword_counter"].most_common(10)
+                ],
+                "sentiment_distribution": dict(group["sentiment_counter"]),
+                "news_count": group["news_count"],
+                "top_news": top_news[:10],
+            }
+        )
+
+    return sorted(
+        theme_groups,
+        key=lambda row: (row["stock_count"], row["news_count"]),
+        reverse=True,
+    )
+
+
+def load_daily_theme_source_data(
+    report_date: date,
+    limit_news_per_stock: int = 5,
+) -> dict[str, Any]:
+    signal_stocks = get_signal_stocks_by_date(report_date)
+    stock_names = [row["stock_name"] for row in signal_stocks if row.get("stock_name")]
+    profiles = _load_stock_profiles(stock_names)
+    terms_by_stock = _load_stock_terms(stock_names)
+    analyses = _load_stock_analyses(stock_names, report_date)
+    news_by_stock = _load_relevant_news_by_stock(stock_names, limit_news_per_stock)
+    theme_groups = _build_daily_theme_groups(
+        signal_stocks=signal_stocks,
+        profiles=profiles,
+        terms_by_stock=terms_by_stock,
+        analyses=analyses,
+        news_by_stock=news_by_stock,
+    )
+
+    return {
+        "report_date": report_date,
+        "signal_stocks": signal_stocks,
+        "theme_groups": theme_groups,
+        "source_stock_count": len(signal_stocks),
+        "source_news_count": sum(len(items) for items in news_by_stock.values()),
+    }
+
+
+def build_daily_theme_analysis_prompt(
+    report_date: date,
+    grouped_theme_data: list[dict[str, Any]],
+) -> str:
+    theme_data_text = json.dumps(
+        grouped_theme_data[:15],
+        ensure_ascii=False,
+        default=str,
+        indent=2,
+    )
+    return f"""
+아래 데이터는 {report_date.isoformat()} 당일 500억봉 종목을 테마별로 묶은 자료입니다.
+뉴스, 종목별 AI 분석, 검색 키워드, 대표 테마 정보를 근거로 당일 강했던 섹터/테마/이슈를 분석하세요.
+
+분석 기준:
+- 투자 추천, 매수/매도/보유 의견을 제시하지 마세요.
+- 뉴스/테마/500억봉 데이터 기반으로만 분석하세요.
+- 당일 주도 테마와 시장 이슈 중심으로 작성하세요.
+- 종목 나열에 그치지 말고 왜 해당 테마가 강했는지 설명하세요.
+- 불확실한 내용은 단정하지 말고 불확실하다고 표현하세요.
+- 과도한 가격 전망이나 수익률 전망을 피하세요.
+
+반드시 아래 JSON 형식으로만 답하세요. JSON 앞뒤에 설명, 마크다운, 코드블록을 붙이지 마세요.
+{{
+  "market_summary": "...",
+  "strong_themes": "...",
+  "theme_rankings": "...",
+  "key_issues": "...",
+  "leading_stocks": "...",
+  "risk_points": "...",
+  "tomorrow_checkpoints": "...",
+  "confidence_score": 0
+}}
+
+테마별 집계 데이터:
+{theme_data_text}
+""".strip()
+
+
+def build_mock_daily_theme_analysis(
+    report_date: date,
+    theme_groups: list[dict[str, Any]],
+) -> dict[str, Any]:
+    top_groups = theme_groups[:5]
+    theme_names = [group["theme"] for group in top_groups]
+    total_stocks = sum(group["stock_count"] for group in theme_groups)
+    total_news = sum(group["news_count"] for group in theme_groups)
+
+    rankings = "\n".join(
+        (
+            f"{index}. {group['theme']} "
+            f"(종목 {group['stock_count']}개, 뉴스 {group['news_count']}건, "
+            f"키워드: {', '.join(group['keywords'][:5]) or '-'})"
+        )
+        for index, group in enumerate(top_groups, start=1)
+    ) or "- 집계된 테마 없음"
+    leading_stocks = "\n".join(
+        (
+            f"- {group['theme']}: "
+            + ", ".join(
+                stock["stock_name"] for stock in group["leading_stocks"][:5]
+            )
+        )
+        for group in top_groups
+    ) or "- 집계된 종목 없음"
+    key_issues = "\n".join(
+        (
+            f"- {group['theme']}: "
+            + "; ".join(news["title"] for news in group["top_news"][:3])
+        )
+        for group in top_groups
+        if group["top_news"]
+    ) or "- 관련 뉴스 부족"
+
+    confidence_score = min(85, 35 + len(theme_groups) * 3 + total_news)
+
+    return {
+        "market_summary": (
+            f"{report_date.isoformat()} 500억봉 종목 {total_stocks}개를 기준으로 "
+            f"{', '.join(theme_names) or '주요 테마'} 흐름이 관찰됐습니다."
+        ),
+        "strong_themes": ", ".join(theme_names) or "집계된 테마 없음",
+        "theme_rankings": rankings,
+        "key_issues": key_issues,
+        "leading_stocks": leading_stocks,
+        "risk_points": "mock 분석이므로 실제 뉴스 본문, 공시, 수급 데이터와 함께 추가 확인이 필요합니다.",
+        "tomorrow_checkpoints": "상위 테마의 후속 뉴스, 거래대금 지속 여부, 관련 종목 확산 여부를 확인하세요.",
+        "confidence_score": confidence_score,
+    }
+
+
+def run_llm_daily_theme_analysis(prompt: str) -> dict[str, Any]:
+    return _run_openai_json_prompt(
+        prompt,
+        REQUIRED_DAILY_THEME_ANALYSIS_FIELDS,
+        error_context="일간 테마 분석",
+    )
+
+
+def normalize_daily_theme_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
+    normalized = {
+        column: analysis.get(column) for column in DAILY_THEME_ANALYSIS_COLUMNS
+    }
+    try:
+        confidence_score = float(normalized.get("confidence_score") or 0)
+    except (TypeError, ValueError):
+        confidence_score = 0
+    normalized["confidence_score"] = max(0, min(100, confidence_score))
+    return normalized
+
+
+def save_daily_theme_analysis(
+    report_date: date,
+    analysis: dict[str, Any],
+    source_stock_count: int,
+    source_news_count: int,
+) -> None:
+    normalized = normalize_daily_theme_analysis(analysis)
+    sql = """
+        INSERT INTO daily_theme_analysis (
+            report_date,
+            market_summary,
+            strong_themes,
+            theme_rankings,
+            key_issues,
+            leading_stocks,
+            risk_points,
+            tomorrow_checkpoints,
+            confidence_score,
+            source_stock_count,
+            source_news_count,
+            updated_at
+        )
+        VALUES (
+            %(report_date)s,
+            %(market_summary)s,
+            %(strong_themes)s,
+            %(theme_rankings)s,
+            %(key_issues)s,
+            %(leading_stocks)s,
+            %(risk_points)s,
+            %(tomorrow_checkpoints)s,
+            %(confidence_score)s,
+            %(source_stock_count)s,
+            %(source_news_count)s,
+            NOW()
+        )
+        ON CONFLICT (report_date) DO UPDATE
+        SET
+            market_summary = EXCLUDED.market_summary,
+            strong_themes = EXCLUDED.strong_themes,
+            theme_rankings = EXCLUDED.theme_rankings,
+            key_issues = EXCLUDED.key_issues,
+            leading_stocks = EXCLUDED.leading_stocks,
+            risk_points = EXCLUDED.risk_points,
+            tomorrow_checkpoints = EXCLUDED.tomorrow_checkpoints,
+            confidence_score = EXCLUDED.confidence_score,
+            source_stock_count = EXCLUDED.source_stock_count,
+            source_news_count = EXCLUDED.source_news_count,
+            updated_at = NOW()
+    """
+    params = {
+        "report_date": report_date,
+        "source_stock_count": source_stock_count,
+        "source_news_count": source_news_count,
+        **normalized,
+    }
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, params)
+        connection.commit()
+
+
+def analyze_daily_themes(
+    report_date: date,
+    limit_news_per_stock: int = 5,
+    mock: bool = False,
+) -> dict[str, Any]:
+    source_data = load_daily_theme_source_data(
+        report_date=report_date,
+        limit_news_per_stock=limit_news_per_stock,
+    )
+    theme_groups = source_data["theme_groups"]
+    prompt = build_daily_theme_analysis_prompt(report_date, theme_groups)
+    analysis = (
+        build_mock_daily_theme_analysis(report_date, theme_groups)
+        if mock
+        else run_llm_daily_theme_analysis(prompt)
+    )
+    normalized = normalize_daily_theme_analysis(analysis)
+    save_daily_theme_analysis(
+        report_date=report_date,
+        analysis=normalized,
+        source_stock_count=source_data["source_stock_count"],
+        source_news_count=source_data["source_news_count"],
+    )
+
+    return {
+        "report_date": report_date,
+        "source_stock_count": source_data["source_stock_count"],
+        "source_news_count": source_data["source_news_count"],
+        **normalized,
     }
 
 

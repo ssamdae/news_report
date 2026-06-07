@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import csv
 from datetime import date, datetime
@@ -440,6 +442,38 @@ def analyze_signals_command(report_date: date, limit: int, mock: bool) -> None:
             print(f"- {row['stock_name']}: {row['error']}")
 
 
+def analyze_daily_themes_command(
+    report_date: date,
+    limit_news_per_stock: int,
+    mock: bool,
+) -> None:
+    from database.news_repository import StockAnalysisLlmError, analyze_daily_themes
+
+    try:
+        result = analyze_daily_themes(
+            report_date=report_date,
+            limit_news_per_stock=limit_news_per_stock,
+            mock=mock,
+        )
+    except StockAnalysisLlmError as error:
+        print(f"일간 테마 분석 실패: {error}")
+        if error.raw_response:
+            preview = error.raw_response[:500]
+            suffix = "..." if len(error.raw_response) > 500 else ""
+            print(f"LLM 원문 응답 일부: {preview}{suffix}")
+        print("분석 결과를 저장하지 않았습니다.")
+        return
+
+    summary = result.get("market_summary") or ""
+    preview = summary[:160] + ("..." if len(summary) > 160 else "")
+
+    print(f"분석일: {result['report_date']}")
+    print(f"500억봉 종목 수: {result['source_stock_count']}건")
+    print(f"관련 뉴스 수: {result['source_news_count']}건")
+    print(f"confidence_score: {result['confidence_score']:.2f}")
+    print(f"market_summary: {preview}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stock research system")
     parser.add_argument("command", nargs="?", help="Command to run")
@@ -478,6 +512,12 @@ def main() -> None:
         "--mock",
         action="store_true",
         help="Use mock output for analyze-stock without calling an LLM",
+    )
+    parser.add_argument(
+        "--limit-news-per-stock",
+        type=int,
+        default=5,
+        help="Maximum relevant news rows per stock for analyze-daily-themes",
     )
     args = parser.parse_args()
 
@@ -562,6 +602,16 @@ def main() -> None:
         analyze_signals_command(
             report_date=_parse_date(args.date),
             limit=args.limit or 20,
+            mock=args.mock,
+        )
+        return
+
+    if args.command == "analyze-daily-themes":
+        if not args.date:
+            parser.error("analyze-daily-themes requires --date")
+        analyze_daily_themes_command(
+            report_date=_parse_date(args.date),
+            limit_news_per_stock=args.limit_news_per_stock,
             mock=args.mock,
         )
         return

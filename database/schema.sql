@@ -281,6 +281,23 @@ CREATE TABLE IF NOT EXISTS stock_analysis (
     UNIQUE (stock_name, report_date)
 );
 
+CREATE TABLE IF NOT EXISTS daily_theme_analysis (
+    id BIGSERIAL PRIMARY KEY,
+    report_date DATE NOT NULL UNIQUE,
+    market_summary TEXT,
+    strong_themes TEXT,
+    theme_rankings TEXT,
+    key_issues TEXT,
+    leading_stocks TEXT,
+    risk_points TEXT,
+    tomorrow_checkpoints TEXT,
+    confidence_score NUMERIC(10, 2),
+    source_stock_count INTEGER NOT NULL DEFAULT 0,
+    source_news_count INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_daily_price_trade_date
     ON daily_price (trade_date);
 
@@ -374,3 +391,6 @@ CREATE INDEX IF NOT EXISTS idx_stock_analysis_stock_name
 
 CREATE INDEX IF NOT EXISTS idx_stock_analysis_report_date
     ON stock_analysis (report_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_daily_theme_analysis_report_date
+    ON daily_theme_analysis (report_date DESC);

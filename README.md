@@ -114,3 +114,25 @@ python3.12 main.py analyze-signals --date 2026-06-04 --mock
 ```
 
 분석 결과는 `stock_analysis` 테이블에 저장되며 Streamlit 대시보드의 `AI 분석` 영역에서 선택 날짜별 현황과 종목별 상세 내용을 확인할 수 있습니다.
+
+## 일간 테마 분석
+
+선택 날짜의 500억봉 종목 전체를 기반으로 당일 강했던 섹터/테마/이슈를 분석합니다.
+
+```bash
+python3.12 main.py analyze-daily-themes --date 2026-06-07
+```
+
+OpenAI API를 호출하지 않는 mock 실행:
+
+```bash
+python3.12 main.py analyze-daily-themes --date 2026-06-07 --mock
+```
+
+종목별 관련 뉴스 반영 건수는 기본 5건이며 옵션으로 조정할 수 있습니다.
+
+```bash
+python3.12 main.py analyze-daily-themes --date 2026-06-07 --limit-news-per-stock 10
+```
+
+분석 결과는 `daily_theme_analysis` 테이블에 `report_date` 기준으로 upsert 저장됩니다.
