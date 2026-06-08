@@ -62,6 +62,7 @@ ANALYSIS_COLUMNS = [
     "risk_points",
     "theme_points",
     "tomorrow_checkpoints",
+    "knowledge_points",
     "sentiment",
     "confidence_score",
 ]
@@ -669,9 +670,220 @@ def get_relevant_news_for_analysis(
     ]
 
 
+def _empty_stock_knowledge_context(stock_name: str) -> dict[str, Any]:
+    return {
+        "stock_name": stock_name,
+        "primary_theme": None,
+        "keywords": [],
+        "search_terms": [],
+        "pdf_appear_count": 0,
+        "pdf_examples": [],
+        "theme_history": [],
+        "canonical_themes": [],
+    }
+
+
+def get_stock_knowledge_context(stock_name: str) -> dict[str, Any]:
+    stock_name = (stock_name or "").strip()
+    context = _empty_stock_knowledge_context(stock_name)
+    if not stock_name:
+        return context
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    primary_theme,
+                    secondary_theme,
+                    related_themes
+                FROM stock_profile
+                WHERE stock_name = %(stock_name)s
+                LIMIT 1
+                """,
+                {"stock_name": stock_name},
+            )
+            profile = cursor.fetchone()
+            if profile:
+                context["primary_theme"] = profile[0]
+                for value in profile[1:]:
+                    if value:
+                        context["keywords"].extend(
+                            [
+                                item.strip()
+                                for item in str(value).split(",")
+                                if item.strip()
+                            ]
+                        )
+
+            cursor.execute(
+                """
+                SELECT
+                    node_type,
+                    node_value,
+                    relation_type,
+                    score
+                FROM stock_knowledge_graph
+                WHERE stock_name = %(stock_name)s
+                    AND node_type IN ('THEME', 'KEYWORD')
+                ORDER BY score DESC, node_type, node_value
+                LIMIT 10
+                """,
+                {"stock_name": stock_name},
+            )
+            knowledge_rows = _rows_to_dicts(cursor)
+            for row in knowledge_rows:
+                node_value = str(row.get("node_value") or "").strip()
+                if not node_value:
+                    continue
+                if row.get("node_type") == "THEME" and not context["primary_theme"]:
+                    context["primary_theme"] = node_value
+                context["keywords"].append(node_value)
+
+            cursor.execute(
+                """
+                SELECT
+                    search_term,
+                    term_type,
+                    score
+                FROM stock_search_term
+                WHERE stock_name = %(stock_name)s
+                ORDER BY score DESC, search_term
+                LIMIT 10
+                """,
+                {"stock_name": stock_name},
+            )
+            context["search_terms"] = [
+                row["search_term"]
+                for row in _rows_to_dicts(cursor)
+                if row.get("search_term")
+            ]
+
+            cursor.execute(
+                """
+                SELECT COUNT(*)
+                FROM pdf_signal_item
+                WHERE stock_name = %(stock_name)s
+                """,
+                {"stock_name": stock_name},
+            )
+            context["pdf_appear_count"] = int(cursor.fetchone()[0] or 0)
+
+            cursor.execute(
+                """
+                SELECT
+                    report_date,
+                    theme_name,
+                    change_rate,
+                    trading_value,
+                    raw_line
+                FROM pdf_signal_item
+                WHERE stock_name = %(stock_name)s
+                ORDER BY report_date DESC NULLS LAST,
+                    trading_value DESC NULLS LAST,
+                    change_rate DESC NULLS LAST
+                LIMIT 3
+                """,
+                {"stock_name": stock_name},
+            )
+            pdf_examples = []
+            for row in _rows_to_dicts(cursor):
+                theme_name = _to_text(row.get("theme_name"))
+                raw_line = _to_text(row.get("raw_line"))
+                summary_parts = []
+                if theme_name and theme_name != "-":
+                    summary_parts.append(f"{theme_name} 테마")
+                if raw_line and raw_line != "-":
+                    summary_parts.append(raw_line)
+                if row.get("change_rate") is not None:
+                    summary_parts.append(f"등락률 {row['change_rate']}%")
+                pdf_examples.append(
+                    {
+                        "report_date": _to_text(row.get("report_date")),
+                        "summary": " / ".join(summary_parts) or "과거 PDF 강세 사례",
+                    }
+                )
+            context["pdf_examples"] = pdf_examples
+
+            cursor.execute(
+                """
+                SELECT
+                    t.theme_name,
+                    m.hit_count,
+                    m.avg_change_rate,
+                    m.max_change_rate,
+                    m.total_trading_value,
+                    m.first_seen_date,
+                    m.last_seen_date
+                FROM stock_theme_map m
+                JOIN theme_master t
+                    ON t.id = m.theme_id
+                WHERE m.stock_name = %(stock_name)s
+                ORDER BY m.hit_count DESC,
+                    m.total_trading_value DESC NULLS LAST
+                LIMIT 5
+                """,
+                {"stock_name": stock_name},
+            )
+            context["theme_history"] = _rows_to_dicts(cursor)
+
+            cursor.execute(
+                """
+                SELECT
+                    c.canonical_name,
+                    c.category_name,
+                    c.description,
+                    m.hit_count
+                FROM stock_canonical_theme_map m
+                LEFT JOIN canonical_theme_master c
+                    ON c.canonical_name = m.canonical_theme
+                WHERE m.stock_name = %(stock_name)s
+                ORDER BY m.hit_count DESC, m.canonical_theme
+                LIMIT 5
+                """,
+                {"stock_name": stock_name},
+            )
+            context["canonical_themes"] = _rows_to_dicts(cursor)
+
+    seen_keywords: set[str] = set()
+    deduped_keywords = []
+    for keyword in context["keywords"]:
+        keyword = str(keyword).strip()
+        if not keyword or keyword in seen_keywords:
+            continue
+        seen_keywords.add(keyword)
+        deduped_keywords.append(keyword)
+    context["keywords"] = deduped_keywords[:10]
+    return context
+
+
+def _format_stock_knowledge_context(context: dict[str, Any]) -> str:
+    keywords = ", ".join(context.get("keywords") or []) or "데이터 부족"
+    search_terms = ", ".join(context.get("search_terms") or []) or "데이터 부족"
+    examples = context.get("pdf_examples") or []
+    if examples:
+        example_lines = "\n".join(
+            f"  {index}) {item['report_date']}: {item['summary']}"
+            for index, item in enumerate(examples, start=1)
+        )
+    else:
+        example_lines = "  - 과거 PDF 출현 사례 부족"
+
+    return f"""
+[종목 지식맵 컨텍스트]
+- 대표 테마: {context.get("primary_theme") or "데이터 부족"}
+- 주요 키워드: {keywords}
+- 과거 PDF 출현 횟수: {context.get("pdf_appear_count", 0)}
+- 과거 출현 사례:
+{example_lines}
+- 관련 검색어: {search_terms}
+""".strip()
+
+
 def build_stock_analysis_prompt(
     stock_name: str,
     news_items: list[dict[str, Any]],
+    knowledge_context: dict[str, Any] | None = None,
 ) -> str:
     news_lines = []
     for index, item in enumerate(news_items, start=1):
@@ -693,12 +905,17 @@ def build_stock_analysis_prompt(
         )
 
     news_text = "\n\n".join(news_lines) or "관련 뉴스 없음"
+    knowledge_text = _format_stock_knowledge_context(
+        knowledge_context or _empty_stock_knowledge_context(stock_name)
+    )
     return f"""
 아래 뉴스는 {stock_name} 종목과 관련성이 있다고 필터링된 뉴스입니다.
 투자 추천이 아니라 뉴스 기반 분석으로만 작성하세요.
 매수, 매도, 보유 같은 투자 행동을 권하지 마세요.
 뉴스로 확인되지 않은 내용은 단정하지 말고 불확실하다고 표현하세요.
 과도한 확신이나 가격 전망을 피하고, 관찰 가능한 이슈와 체크포인트 중심으로 작성하세요.
+현재 뉴스만 단순 요약하지 말고, 종목 지식맵의 과거 테마와 연결해서 설명하세요.
+지식 컨텍스트가 부족한 경우 억지로 과거 패턴을 만들지 말고 "과거 데이터 부족" 또는 "반복성 판단 제한"이라고 표현하세요.
 
 분석 항목:
 - 한줄 요약
@@ -707,6 +924,7 @@ def build_stock_analysis_prompt(
 - 리스크 요인
 - 관련 테마
 - 내일 체크포인트
+- 지식맵 해석(knowledge_points): 과거 강세 패턴, 현재 뉴스와의 연결점, 신규 모멘텀인지 기존 테마 재점화인지 판단
 - 종합 분위기(sentiment): positive / neutral / negative 중 하나
 - 신뢰도 점수(confidence_score): 0~100, 뉴스 수와 구체성에 따라 보수적으로 산정
 
@@ -718,9 +936,12 @@ def build_stock_analysis_prompt(
   "risk_points": "...",
   "theme_points": "...",
   "tomorrow_checkpoints": "...",
+  "knowledge_points": "...",
   "sentiment": "positive|neutral|negative",
   "confidence_score": 0
 }}
+
+{knowledge_text}
 
 뉴스 목록:
 {news_text}
@@ -730,6 +951,7 @@ def build_stock_analysis_prompt(
 def build_mock_stock_analysis(
     stock_name: str,
     news_items: list[dict[str, Any]],
+    knowledge_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     titles = [item.get("title") or "" for item in news_items if item.get("title")]
     top_titles = titles[:5]
@@ -744,6 +966,21 @@ def build_mock_stock_analysis(
     theme_text = ", ".join(query_terms[:8]) if query_terms else "관련 검색어 없음"
     source_count = len(news_items)
     confidence_score = min(80, 40 + source_count * 2)
+    knowledge_context = knowledge_context or _empty_stock_knowledge_context(stock_name)
+    keywords = knowledge_context.get("keywords") or []
+    primary_theme = knowledge_context.get("primary_theme")
+    pdf_appear_count = int(knowledge_context.get("pdf_appear_count") or 0)
+    if pdf_appear_count > 0 or primary_theme or keywords:
+        theme_hint = primary_theme or ", ".join(keywords[:3]) or "주요 테마"
+        knowledge_points = (
+            f"과거 PDF 기준 {stock_name}는 {theme_hint} 이슈와 연결되어 "
+            f"{pdf_appear_count}회 등장했습니다. 금일 흐름은 현재 뉴스와 함께 "
+            "기존 테마 재점화인지 신규 모멘텀인지 추가 확인이 필요합니다."
+        )
+    else:
+        knowledge_points = (
+            "과거 PDF 기반 반복 강세 데이터가 부족해 반복성 판단은 제한적입니다."
+        )
 
     return {
         "summary": f"{stock_name} 관련 뉴스 {source_count}건을 기준으로 주요 이슈를 점검했습니다.",
@@ -752,6 +989,7 @@ def build_mock_stock_analysis(
         "risk_points": "뉴스 기반 임시 분석이므로 실제 실적, 수급, 공시와 함께 교차 확인해야 합니다.",
         "theme_points": theme_text,
         "tomorrow_checkpoints": "장 시작 전 추가 공시, 주요 고객사/테마 뉴스, 거래대금 변화를 확인하세요.",
+        "knowledge_points": knowledge_points,
         "sentiment": "neutral",
         "confidence_score": confidence_score,
     }
@@ -863,6 +1101,10 @@ def call_stock_analysis_llm(prompt: str) -> dict[str, Any]:
 
 def normalize_stock_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
     normalized = {column: analysis.get(column) for column in ANALYSIS_COLUMNS}
+    for column in ANALYSIS_COLUMNS:
+        if column != "confidence_score":
+            normalized[column] = _to_text(normalized.get(column))
+
     sentiment = (normalized.get("sentiment") or "neutral").strip().lower()
     if sentiment not in {"positive", "neutral", "negative"}:
         sentiment = "neutral"
@@ -894,6 +1136,7 @@ def save_stock_analysis(
             risk_points,
             theme_points,
             tomorrow_checkpoints,
+            knowledge_points,
             sentiment,
             confidence_score,
             source_news_count,
@@ -909,6 +1152,7 @@ def save_stock_analysis(
             %(risk_points)s,
             %(theme_points)s,
             %(tomorrow_checkpoints)s,
+            %(knowledge_points)s,
             %(sentiment)s,
             %(confidence_score)s,
             %(source_news_count)s,
@@ -923,6 +1167,7 @@ def save_stock_analysis(
             risk_points = EXCLUDED.risk_points,
             theme_points = EXCLUDED.theme_points,
             tomorrow_checkpoints = EXCLUDED.tomorrow_checkpoints,
+            knowledge_points = EXCLUDED.knowledge_points,
             sentiment = EXCLUDED.sentiment,
             confidence_score = EXCLUDED.confidence_score,
             source_news_count = EXCLUDED.source_news_count,
@@ -948,9 +1193,10 @@ def analyze_stock_news(
     mock: bool = False,
 ) -> dict[str, Any]:
     news_items = get_relevant_news_for_analysis(stock_name=stock_name, limit=limit)
-    prompt = build_stock_analysis_prompt(stock_name, news_items)
+    knowledge_context = get_stock_knowledge_context(stock_name)
+    prompt = build_stock_analysis_prompt(stock_name, news_items, knowledge_context)
     analysis = (
-        build_mock_stock_analysis(stock_name, news_items)
+        build_mock_stock_analysis(stock_name, news_items, knowledge_context)
         if mock
         else call_stock_analysis_llm(prompt)
     )
@@ -1345,6 +1591,99 @@ def _load_pdf_signal_history_context(
             return _rows_to_dicts(cursor)
 
 
+def _build_market_knowledge_summary(
+    contexts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    theme_stocks: dict[str, list[str]] = defaultdict(list)
+    keyword_counter: Counter[str] = Counter()
+    high_pdf_stocks = []
+
+    for context in contexts:
+        stock_name = context.get("stock_name")
+        if not stock_name:
+            continue
+
+        theme = context.get("primary_theme")
+        if theme:
+            theme_stocks[str(theme)].append(str(stock_name))
+
+        for keyword in context.get("keywords") or []:
+            keyword = str(keyword).strip()
+            if keyword:
+                keyword_counter[keyword] += 1
+
+        appear_count = int(context.get("pdf_appear_count") or 0)
+        if appear_count > 0:
+            high_pdf_stocks.append(
+                {
+                    "stock_name": stock_name,
+                    "pdf_appear_count": appear_count,
+                    "primary_theme": theme,
+                    "keywords": (context.get("keywords") or [])[:5],
+                }
+            )
+
+    repeated_themes = [
+        {
+            "theme": theme,
+            "stocks": stocks[:8],
+            "stock_count": len(stocks),
+        }
+        for theme, stocks in theme_stocks.items()
+        if len(stocks) >= 2
+    ]
+    repeated_themes.sort(key=lambda row: row["stock_count"], reverse=True)
+    high_pdf_stocks.sort(
+        key=lambda row: row["pdf_appear_count"],
+        reverse=True,
+    )
+
+    return {
+        "repeated_themes": repeated_themes[:10],
+        "high_pdf_appear_stocks": high_pdf_stocks[:10],
+        "common_keywords": [
+            keyword for keyword, _count in keyword_counter.most_common(10)
+        ],
+    }
+
+
+def _format_market_knowledge_summary(summary: dict[str, Any]) -> str:
+    repeated_themes = summary.get("repeated_themes") or []
+    high_pdf_stocks = summary.get("high_pdf_appear_stocks") or []
+    common_keywords = summary.get("common_keywords") or []
+
+    if repeated_themes:
+        repeated_lines = "\n".join(
+            f"  - {row['theme']}: {', '.join(row['stocks'])}"
+            for row in repeated_themes[:8]
+        )
+    else:
+        repeated_lines = "  - 반복 등장 테마 데이터 부족"
+
+    if high_pdf_stocks:
+        high_pdf_lines = "\n".join(
+            f"  - {row['stock_name']}: {row['pdf_appear_count']}회"
+            for row in high_pdf_stocks[:8]
+        )
+    else:
+        high_pdf_lines = "  - 과거 PDF 출현 빈도 데이터 부족"
+
+    if common_keywords:
+        keyword_lines = "\n".join(f"  - {keyword}" for keyword in common_keywords[:10])
+    else:
+        keyword_lines = "  - 공통 키워드 데이터 부족"
+
+    return f"""
+[지식맵 기반 시장 컨텍스트]
+- 반복 등장 테마:
+{repeated_lines}
+- 과거 PDF 출현 빈도가 높은 종목:
+{high_pdf_lines}
+- 공통 키워드:
+{keyword_lines}
+""".strip()
+
+
 def _choose_stock_theme(
     stock_name: str,
     profile: dict[str, Any] | None,
@@ -1470,6 +1809,19 @@ def load_daily_theme_source_data(
     terms_by_stock = _load_stock_terms(stock_names)
     analyses = _load_stock_analyses(stock_names, report_date)
     news_by_stock = _load_relevant_news_by_stock(stock_names, limit_news_per_stock)
+    stock_knowledge_contexts = [
+        get_stock_knowledge_context(stock_name) for stock_name in stock_names
+    ]
+    knowledge_summary = _build_market_knowledge_summary(stock_knowledge_contexts)
+    compact_stock_knowledge_contexts = [
+        {
+            "stock_name": context.get("stock_name"),
+            "primary_theme": context.get("primary_theme"),
+            "keywords": (context.get("keywords") or [])[:5],
+            "pdf_appear_count": context.get("pdf_appear_count", 0),
+        }
+        for context in stock_knowledge_contexts[:40]
+    ]
     market_context = {
         "stock_knowledge_graph": _load_stock_knowledge_context(stock_names),
         "stock_theme_map_history": _load_stock_theme_history_context(stock_names),
@@ -1478,6 +1830,8 @@ def load_daily_theme_source_data(
             stock_names,
             report_date,
         ),
+        "stock_knowledge_contexts": compact_stock_knowledge_contexts,
+        "knowledge_summary": knowledge_summary,
     }
     theme_groups = _build_daily_theme_groups(
         signal_stocks=signal_stocks,
@@ -1514,6 +1868,9 @@ def build_daily_theme_analysis_prompt(
         default=str,
         indent=2,
     )
+    knowledge_summary_text = _format_market_knowledge_summary(
+        (market_context or {}).get("knowledge_summary") or {}
+    )
     return f"""
 아래 데이터는 {report_date.isoformat()} 당일 500억봉 종목을 테마별로 묶은 자료입니다.
 뉴스, 종목별 AI 분석, 검색 키워드, 대표 테마, 지식 그래프, 과거 강세 사례를 근거로 당일 시장을 분석하세요.
@@ -1537,6 +1894,8 @@ def build_daily_theme_analysis_prompt(
 - top_picks 선정에는 거래대금, 관련 뉴스 수, relevance_score, 테마 대표성, 종목별 sentiment/confidence를 함께 참고하세요.
 - market_drivers는 개별 종목보다 상위 이슈 중심으로 작성하세요.
 - market_drivers에는 정책, 산업, 글로벌 기업, 수급, 실적 기대감 등 시장을 움직인 핵심 요인을 요약하세요.
+- 시장 요약에는 오늘 반복적으로 나타난 기존 강세 테마와 새롭게 부각된 테마를 구분해 반영하세요.
+- 기존 주도주의 재점화 여부와 내일도 이어질 가능성이 높은 테마를 설명하세요.
 
 반드시 아래 JSON 형식으로만 답하세요. JSON 앞뒤에 설명, 마크다운, 코드블록을 붙이지 마세요.
 confidence_score를 제외한 모든 필드는 배열이나 객체가 아니라 문자열로 반환하세요.
@@ -1557,6 +1916,8 @@ theme_rankings도 배열이 아니라 "1위 반도체: ...\n2위 AI/로봇: ..."
 
 테마별 집계 데이터:
 {theme_data_text}
+
+{knowledge_summary_text}
 
 추가 시장 컨텍스트:
 {context_text}

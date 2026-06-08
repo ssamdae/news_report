@@ -277,6 +277,7 @@ CREATE TABLE IF NOT EXISTS stock_analysis (
     risk_points TEXT,
     theme_points TEXT,
     tomorrow_checkpoints TEXT,
+    knowledge_points TEXT,
     sentiment TEXT,
     confidence_score NUMERIC(10, 2),
     source_news_count INTEGER NOT NULL DEFAULT 0,
@@ -284,6 +285,9 @@ CREATE TABLE IF NOT EXISTS stock_analysis (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (stock_name, report_date)
 );
+
+ALTER TABLE stock_analysis
+    ADD COLUMN IF NOT EXISTS knowledge_points TEXT;
 
 CREATE TABLE IF NOT EXISTS daily_theme_analysis (
     id BIGSERIAL PRIMARY KEY,

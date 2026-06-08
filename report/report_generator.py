@@ -85,6 +85,18 @@ def _news_summary_text(row: dict[str, Any]) -> str:
     return _truncate_with_ellipsis(compact, 60)
 
 
+def _knowledge_points_text(value: Any) -> str:
+    text = _text(value)
+    if text == "-":
+        return text
+
+    compact = " ".join(text.replace("\n", " ").split())
+    sentences = compact.split(". ")
+    if len(sentences) > 3:
+        compact = ". ".join(sentences[:3]).rstrip(".") + "."
+    return _truncate_with_ellipsis(compact, 260)
+
+
 def _register_korean_font() -> tuple[str, str]:
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.cidfonts import UnicodeCIDFont
@@ -341,6 +353,7 @@ def _load_stock_analyses(report_date: date) -> list[dict[str, Any]]:
             a.risk_points,
             a.theme_points,
             a.tomorrow_checkpoints,
+            a.knowledge_points,
             a.sentiment,
             a.confidence_score
         FROM stock_analysis a
@@ -626,11 +639,15 @@ def generate_daily_report(report_date: date) -> Path:
             else:
                 for column, label in (
                     ("summary", "한줄 요약"),
+                    ("knowledge_points", "지식맵 해석"),
                     ("positive_points", "긍정 요인"),
                     ("risk_points", "리스크"),
                     ("tomorrow_checkpoints", "내일 체크"),
                 ):
-                    _add_report_section(story, label, analysis.get(column), styles)
+                    value = analysis.get(column)
+                    if column == "knowledge_points":
+                        value = _knowledge_points_text(value)
+                    _add_report_section(story, label, value, styles)
 
             story.append(Paragraph("관련 뉴스", styles["heading"]))
             stock_news = get_stock_news_for_report(
