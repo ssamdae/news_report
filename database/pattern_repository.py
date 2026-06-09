@@ -8,6 +8,8 @@ from database.db import get_connection
 
 EMPTY_PATTERN_STATS = {
     "signal_count": 0,
+    "source_signal_count": 0,
+    "source_pdf_count": 0,
     "next_day_win_rate": None,
     "next_day_avg_return": None,
     "day3_win_rate": None,
@@ -43,29 +45,74 @@ def _as_float(value: Any) -> float | None:
 
 def build_stock_pattern_stats() -> dict[str, Any]:
     stats_sql = """
-        WITH signal_counts AS (
+        WITH raw_signals AS (
             SELECT
-                se.stock_code,
-                MAX(sm.stock_name) AS stock_name,
-                COUNT(*)::integer AS signal_count
-            FROM signal_event se
-            JOIN stock_master sm
-                ON sm.stock_code = se.stock_code
-            GROUP BY se.stock_code
-        ),
-        signal_rows AS (
-            SELECT
-                se.id AS signal_id,
                 se.stock_code,
                 sm.stock_name,
                 se.signal_date,
-                dp.close_price AS signal_close
+                'signal_event'::text AS source,
+                1 AS source_priority
             FROM signal_event se
             JOIN stock_master sm
                 ON sm.stock_code = se.stock_code
+            WHERE se.signal_date IS NOT NULL
+
+            UNION ALL
+
+            SELECT
+                sm.stock_code,
+                sm.stock_name,
+                p.report_date AS signal_date,
+                'pdf_signal_item'::text AS source,
+                2 AS source_priority
+            FROM pdf_signal_item p
+            JOIN stock_master sm
+                ON sm.stock_name = p.stock_name
+            WHERE p.report_date IS NOT NULL
+        ),
+        deduped_signals AS (
+            SELECT
+                stock_code,
+                stock_name,
+                signal_date,
+                source
+            FROM (
+                SELECT
+                    stock_code,
+                    stock_name,
+                    signal_date,
+                    source,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY stock_code, signal_date
+                        ORDER BY source_priority
+                    ) AS row_number
+                FROM raw_signals
+            ) ranked
+            WHERE row_number = 1
+        ),
+        signal_counts AS (
+            SELECT
+                stock_code,
+                MAX(stock_name) AS stock_name,
+                COUNT(*)::integer AS signal_count,
+                COUNT(*) FILTER (WHERE source = 'signal_event')::integer
+                    AS source_signal_count,
+                COUNT(*) FILTER (WHERE source = 'pdf_signal_item')::integer
+                    AS source_pdf_count
+            FROM deduped_signals
+            GROUP BY stock_code
+        ),
+        signal_rows AS (
+            SELECT
+                CONCAT(ds.stock_code, ':', ds.signal_date::text) AS signal_id,
+                ds.stock_code,
+                ds.stock_name,
+                ds.signal_date,
+                dp.close_price AS signal_close
+            FROM deduped_signals ds
             JOIN daily_price dp
-                ON dp.stock_code = se.stock_code
-                AND dp.trade_date = se.signal_date
+                ON dp.stock_code = ds.stock_code
+                AND dp.trade_date = ds.signal_date
             WHERE dp.close_price IS NOT NULL
                 AND dp.close_price > 0
         ),
@@ -162,6 +209,8 @@ def build_stock_pattern_stats() -> dict[str, Any]:
             sc.stock_code,
             sc.stock_name,
             sc.signal_count,
+            sc.source_signal_count,
+            sc.source_pdf_count,
             cs.next_day_win_rate,
             cs.next_day_avg_return,
             cs.day3_win_rate,
@@ -180,6 +229,8 @@ def build_stock_pattern_stats() -> dict[str, Any]:
             stock_code,
             stock_name,
             signal_count,
+            source_signal_count,
+            source_pdf_count,
             next_day_win_rate,
             next_day_avg_return,
             day3_win_rate,
@@ -194,6 +245,8 @@ def build_stock_pattern_stats() -> dict[str, Any]:
             %(stock_code)s,
             %(stock_name)s,
             %(signal_count)s,
+            %(source_signal_count)s,
+            %(source_pdf_count)s,
             %(next_day_win_rate)s,
             %(next_day_avg_return)s,
             %(day3_win_rate)s,
@@ -208,6 +261,8 @@ def build_stock_pattern_stats() -> dict[str, Any]:
         SET
             stock_name = EXCLUDED.stock_name,
             signal_count = EXCLUDED.signal_count,
+            source_signal_count = EXCLUDED.source_signal_count,
+            source_pdf_count = EXCLUDED.source_pdf_count,
             next_day_win_rate = EXCLUDED.next_day_win_rate,
             next_day_avg_return = EXCLUDED.next_day_avg_return,
             day3_win_rate = EXCLUDED.day3_win_rate,
@@ -217,6 +272,14 @@ def build_stock_pattern_stats() -> dict[str, Any]:
             max_return_5d = EXCLUDED.max_return_5d,
             min_return_5d = EXCLUDED.min_return_5d,
             updated_at = CURRENT_TIMESTAMP
+    """
+    unmatched_pdf_sql = """
+        SELECT COUNT(*)
+        FROM pdf_signal_item p
+        LEFT JOIN stock_master sm
+            ON sm.stock_name = p.stock_name
+        WHERE p.report_date IS NOT NULL
+            AND sm.stock_code IS NULL
     """
 
     with get_connection() as connection:
@@ -231,6 +294,8 @@ def build_stock_pattern_stats() -> dict[str, Any]:
                         "stock_code": row["stock_code"],
                         "stock_name": row["stock_name"],
                         "signal_count": row["signal_count"] or 0,
+                        "source_signal_count": row["source_signal_count"] or 0,
+                        "source_pdf_count": row["source_pdf_count"] or 0,
                         "next_day_win_rate": _round_decimal(
                             row.get("next_day_win_rate")
                         ),
@@ -248,9 +313,15 @@ def build_stock_pattern_stats() -> dict[str, Any]:
 
             if normalized_rows:
                 cursor.executemany(upsert_sql, normalized_rows)
+
+            cursor.execute(unmatched_pdf_sql)
+            pdf_unmatched_count = int(cursor.fetchone()[0] or 0)
         connection.commit()
 
-    return {"stock_count": len(rows)}
+    return {
+        "stock_count": len(rows),
+        "pdf_unmatched_count": pdf_unmatched_count,
+    }
 
 
 def get_stock_pattern_stats(stock_name: str) -> dict[str, Any]:
@@ -263,6 +334,8 @@ def get_stock_pattern_stats(stock_name: str) -> dict[str, Any]:
         SELECT
             stock_name,
             signal_count,
+            source_signal_count,
+            source_pdf_count,
             next_day_win_rate,
             next_day_avg_return,
             day3_win_rate,
@@ -288,6 +361,8 @@ def get_stock_pattern_stats(stock_name: str) -> dict[str, Any]:
     return {
         "stock_name": result.get("stock_name") or stock_name,
         "signal_count": int(result.get("signal_count") or 0),
+        "source_signal_count": int(result.get("source_signal_count") or 0),
+        "source_pdf_count": int(result.get("source_pdf_count") or 0),
         "next_day_win_rate": _as_float(result.get("next_day_win_rate")),
         "next_day_avg_return": _as_float(result.get("next_day_avg_return")),
         "day3_win_rate": _as_float(result.get("day3_win_rate")),

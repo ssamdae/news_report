@@ -894,16 +894,19 @@ def _format_pct(value: Any, signed: bool = False) -> str:
 
 def _format_stock_pattern_stats(stats: dict[str, Any]) -> str:
     signal_count = int(stats.get("signal_count") or 0)
+    source_signal_count = int(stats.get("source_signal_count") or 0)
+    source_pdf_count = int(stats.get("source_pdf_count") or 0)
     if signal_count <= 0:
         return """
 [과거 500억봉 패턴 통계]
-- 과거 500억봉 발생 횟수: 0회
+- 과거 500억봉 및 PDF 강세 출현 횟수: 0회
 - 통계 해석: 과거 패턴 통계가 부족하여 신뢰도 있는 수익률 판단은 제한됩니다.
 """.strip()
 
     return f"""
 [과거 500억봉 패턴 통계]
-- 과거 500억봉 발생 횟수: {signal_count}회
+- 과거 500억봉 및 PDF 강세 출현 횟수: {signal_count}회
+- 출처별 신호 수: 시스템 신호 {source_signal_count}회 / PDF 과거 사례 {source_pdf_count}회
 - 다음 거래일 상승확률: {_format_pct(stats.get("next_day_win_rate"))}
 - 다음 거래일 평균 수익률: {_format_pct(stats.get("next_day_avg_return"), signed=True)}
 - 3거래일 후 상승확률: {_format_pct(stats.get("day3_win_rate"))}
@@ -952,7 +955,9 @@ def build_stock_analysis_prompt(
 과도한 확신이나 가격 전망을 피하고, 관찰 가능한 이슈와 체크포인트 중심으로 작성하세요.
 현재 뉴스만 단순 요약하지 말고, 종목 지식맵의 과거 테마와 연결해서 설명하세요.
 지식 컨텍스트가 부족한 경우 억지로 과거 패턴을 만들지 말고 "과거 데이터 부족" 또는 "반복성 판단 제한"이라고 표현하세요.
-과거 500억봉 패턴 통계가 있는 경우 단기 성과가 우호적인지, 추세 지속 가능성이 있는지 현재 뉴스/지식맵과 연결해 설명하세요.
+과거 500억봉 및 PDF 강세 출현 통계가 있는 경우 단기 성과가 우호적인지, 추세 지속 가능성이 있는지 현재 뉴스/지식맵과 연결해 설명하세요.
+signal_count가 3회 이상이면 통계적 참고 가치가 있는 것으로 설명하세요.
+signal_count가 10회 이상이면 반복 패턴 신뢰도가 상대적으로 높다고 설명하세요.
 signal_count가 3 미만이면 "표본 부족으로 통계 신뢰도는 낮음"이라고 판단하세요.
 패턴 통계가 없으면 억지 해석하지 말고 수익률 판단이 제한된다고 표현하세요.
 
@@ -1029,7 +1034,7 @@ def build_mock_stock_analysis(
     pattern_signal_count = int(pattern_stats.get("signal_count") or 0)
     if pattern_signal_count >= 3:
         pattern_points = (
-            f"과거 500억봉 발생 {pattern_signal_count}회 기준, 다음 거래일 "
+            f"과거 500억봉 및 PDF 강세 출현 {pattern_signal_count}회 기준, 다음 거래일 "
             f"상승확률은 {_format_pct(pattern_stats.get('next_day_win_rate'))}, "
             f"5거래일 평균 수익률은 "
             f"{_format_pct(pattern_stats.get('day5_avg_return'), signed=True)}였습니다. "
@@ -1037,7 +1042,7 @@ def build_mock_stock_analysis(
         )
     elif pattern_signal_count > 0:
         pattern_points = (
-            f"과거 500억봉 발생 사례가 {pattern_signal_count}회로 적어 "
+            f"과거 500억봉 및 PDF 강세 출현 사례가 {pattern_signal_count}회로 적어 "
             "표본 부족으로 통계 신뢰도는 낮습니다. 현재 상승은 뉴스와 테마 흐름 중심으로 판단할 필요가 있습니다."
         )
     else:

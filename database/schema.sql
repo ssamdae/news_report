@@ -297,6 +297,8 @@ CREATE TABLE IF NOT EXISTS stock_pattern_stats (
     stock_code TEXT PRIMARY KEY,
     stock_name TEXT,
     signal_count INTEGER,
+    source_signal_count INTEGER DEFAULT 0,
+    source_pdf_count INTEGER DEFAULT 0,
     next_day_win_rate NUMERIC,
     next_day_avg_return NUMERIC,
     day3_win_rate NUMERIC,
@@ -307,6 +309,12 @@ CREATE TABLE IF NOT EXISTS stock_pattern_stats (
     min_return_5d NUMERIC,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE stock_pattern_stats
+    ADD COLUMN IF NOT EXISTS source_signal_count INTEGER DEFAULT 0;
+
+ALTER TABLE stock_pattern_stats
+    ADD COLUMN IF NOT EXISTS source_pdf_count INTEGER DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS daily_theme_analysis (
     id BIGSERIAL PRIMARY KEY,

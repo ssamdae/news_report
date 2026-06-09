@@ -575,6 +575,7 @@ def build_pattern_stats_command() -> None:
 
     result = build_stock_pattern_stats()
     print(f"stock_pattern_stats 구축 완료: {result['stock_count']}개 종목")
+    print(f"pdf_signal_item 종목명 매핑 실패: {result['pdf_unmatched_count']}건")
 
 
 def _print_pipeline_failure(step_label: str, error: Exception) -> None:
@@ -621,7 +622,11 @@ def run_daily_report_command(
         current_step = "[3/6] 패턴 통계 갱신"
         print("[3/6] 패턴 통계 갱신 시작")
         pattern_result = build_stock_pattern_stats()
-        print(f"[3/6] 완료 (종목 {pattern_result['stock_count']}건)")
+        print(
+            "[3/6] 완료 "
+            f"(종목 {pattern_result['stock_count']}건, "
+            f"PDF 매핑 실패 {pattern_result['pdf_unmatched_count']}건)"
+        )
 
         current_step = "[4/6] 500억봉 종목 AI 분석"
         print("[4/6] 500억봉 종목 AI 분석 시작")

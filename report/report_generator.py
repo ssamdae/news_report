@@ -127,8 +127,11 @@ def _pattern_stats_text(stats: dict[str, Any], interpretation: Any) -> str:
     if signal_count <= 0:
         return "과거 500억봉 패턴 통계가 부족하여 신뢰도 있는 수익률 판단은 제한됩니다."
 
+    source_signal_count = int(stats.get("source_signal_count") or 0)
+    source_pdf_count = int(stats.get("source_pdf_count") or 0)
     lines = [
         f"발생횟수: {signal_count}회",
+        f"- 시스템 신호: {source_signal_count}회 / PDF 과거 사례: {source_pdf_count}회",
         (
             "D+1 승률/평균: "
             f"{_format_pattern_pct(stats.get('next_day_win_rate'))} / "
