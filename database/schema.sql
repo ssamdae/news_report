@@ -278,6 +278,7 @@ CREATE TABLE IF NOT EXISTS stock_analysis (
     theme_points TEXT,
     tomorrow_checkpoints TEXT,
     knowledge_points TEXT,
+    pattern_points TEXT,
     sentiment TEXT,
     confidence_score NUMERIC(10, 2),
     source_news_count INTEGER NOT NULL DEFAULT 0,
@@ -288,6 +289,24 @@ CREATE TABLE IF NOT EXISTS stock_analysis (
 
 ALTER TABLE stock_analysis
     ADD COLUMN IF NOT EXISTS knowledge_points TEXT;
+
+ALTER TABLE stock_analysis
+    ADD COLUMN IF NOT EXISTS pattern_points TEXT;
+
+CREATE TABLE IF NOT EXISTS stock_pattern_stats (
+    stock_code TEXT PRIMARY KEY,
+    stock_name TEXT,
+    signal_count INTEGER,
+    next_day_win_rate NUMERIC,
+    next_day_avg_return NUMERIC,
+    day3_win_rate NUMERIC,
+    day3_avg_return NUMERIC,
+    day5_win_rate NUMERIC,
+    day5_avg_return NUMERIC,
+    max_return_5d NUMERIC,
+    min_return_5d NUMERIC,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
 CREATE TABLE IF NOT EXISTS daily_theme_analysis (
     id BIGSERIAL PRIMARY KEY,

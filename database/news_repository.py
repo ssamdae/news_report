@@ -63,6 +63,7 @@ ANALYSIS_COLUMNS = [
     "theme_points",
     "tomorrow_checkpoints",
     "knowledge_points",
+    "pattern_points",
     "sentiment",
     "confidence_score",
 ]
@@ -880,10 +881,44 @@ def _format_stock_knowledge_context(context: dict[str, Any]) -> str:
 """.strip()
 
 
+def _format_pct(value: Any, signed: bool = False) -> str:
+    if value is None:
+        return "데이터 부족"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "데이터 부족"
+    prefix = "+" if signed and number > 0 else ""
+    return f"{prefix}{number:.1f}%"
+
+
+def _format_stock_pattern_stats(stats: dict[str, Any]) -> str:
+    signal_count = int(stats.get("signal_count") or 0)
+    if signal_count <= 0:
+        return """
+[과거 500억봉 패턴 통계]
+- 과거 500억봉 발생 횟수: 0회
+- 통계 해석: 과거 패턴 통계가 부족하여 신뢰도 있는 수익률 판단은 제한됩니다.
+""".strip()
+
+    return f"""
+[과거 500억봉 패턴 통계]
+- 과거 500억봉 발생 횟수: {signal_count}회
+- 다음 거래일 상승확률: {_format_pct(stats.get("next_day_win_rate"))}
+- 다음 거래일 평균 수익률: {_format_pct(stats.get("next_day_avg_return"), signed=True)}
+- 3거래일 후 상승확률: {_format_pct(stats.get("day3_win_rate"))}
+- 3거래일 후 평균 수익률: {_format_pct(stats.get("day3_avg_return"), signed=True)}
+- 5거래일 후 상승확률: {_format_pct(stats.get("day5_win_rate"))}
+- 5거래일 후 평균 수익률: {_format_pct(stats.get("day5_avg_return"), signed=True)}
+- 5거래일 기준 최대/최소 수익률: {_format_pct(stats.get("max_return_5d"), signed=True)} / {_format_pct(stats.get("min_return_5d"), signed=True)}
+""".strip()
+
+
 def build_stock_analysis_prompt(
     stock_name: str,
     news_items: list[dict[str, Any]],
     knowledge_context: dict[str, Any] | None = None,
+    pattern_stats: dict[str, Any] | None = None,
 ) -> str:
     news_lines = []
     for index, item in enumerate(news_items, start=1):
@@ -908,6 +943,7 @@ def build_stock_analysis_prompt(
     knowledge_text = _format_stock_knowledge_context(
         knowledge_context or _empty_stock_knowledge_context(stock_name)
     )
+    pattern_text = _format_stock_pattern_stats(pattern_stats or {})
     return f"""
 아래 뉴스는 {stock_name} 종목과 관련성이 있다고 필터링된 뉴스입니다.
 투자 추천이 아니라 뉴스 기반 분석으로만 작성하세요.
@@ -916,6 +952,9 @@ def build_stock_analysis_prompt(
 과도한 확신이나 가격 전망을 피하고, 관찰 가능한 이슈와 체크포인트 중심으로 작성하세요.
 현재 뉴스만 단순 요약하지 말고, 종목 지식맵의 과거 테마와 연결해서 설명하세요.
 지식 컨텍스트가 부족한 경우 억지로 과거 패턴을 만들지 말고 "과거 데이터 부족" 또는 "반복성 판단 제한"이라고 표현하세요.
+과거 500억봉 패턴 통계가 있는 경우 단기 성과가 우호적인지, 추세 지속 가능성이 있는지 현재 뉴스/지식맵과 연결해 설명하세요.
+signal_count가 3 미만이면 "표본 부족으로 통계 신뢰도는 낮음"이라고 판단하세요.
+패턴 통계가 없으면 억지 해석하지 말고 수익률 판단이 제한된다고 표현하세요.
 
 분석 항목:
 - 한줄 요약
@@ -925,6 +964,7 @@ def build_stock_analysis_prompt(
 - 관련 테마
 - 내일 체크포인트
 - 지식맵 해석(knowledge_points): 과거 강세 패턴, 현재 뉴스와의 연결점, 신규 모멘텀인지 기존 테마 재점화인지 판단
+- 과거 패턴 통계(pattern_points): 과거 500억봉 이후 단기 성과, 표본 신뢰도, 현재 뉴스/지식맵과의 연결점
 - 종합 분위기(sentiment): positive / neutral / negative 중 하나
 - 신뢰도 점수(confidence_score): 0~100, 뉴스 수와 구체성에 따라 보수적으로 산정
 
@@ -937,11 +977,14 @@ def build_stock_analysis_prompt(
   "theme_points": "...",
   "tomorrow_checkpoints": "...",
   "knowledge_points": "...",
+  "pattern_points": "...",
   "sentiment": "positive|neutral|negative",
   "confidence_score": 0
 }}
 
 {knowledge_text}
+
+{pattern_text}
 
 뉴스 목록:
 {news_text}
@@ -952,6 +995,7 @@ def build_mock_stock_analysis(
     stock_name: str,
     news_items: list[dict[str, Any]],
     knowledge_context: dict[str, Any] | None = None,
+    pattern_stats: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     titles = [item.get("title") or "" for item in news_items if item.get("title")]
     top_titles = titles[:5]
@@ -981,6 +1025,25 @@ def build_mock_stock_analysis(
         knowledge_points = (
             "과거 PDF 기반 반복 강세 데이터가 부족해 반복성 판단은 제한적입니다."
         )
+    pattern_stats = pattern_stats or {}
+    pattern_signal_count = int(pattern_stats.get("signal_count") or 0)
+    if pattern_signal_count >= 3:
+        pattern_points = (
+            f"과거 500억봉 발생 {pattern_signal_count}회 기준, 다음 거래일 "
+            f"상승확률은 {_format_pct(pattern_stats.get('next_day_win_rate'))}, "
+            f"5거래일 평균 수익률은 "
+            f"{_format_pct(pattern_stats.get('day5_avg_return'), signed=True)}였습니다. "
+            "현재 뉴스와 테마 흐름이 이어지는지 관찰이 필요합니다."
+        )
+    elif pattern_signal_count > 0:
+        pattern_points = (
+            f"과거 500억봉 발생 사례가 {pattern_signal_count}회로 적어 "
+            "표본 부족으로 통계 신뢰도는 낮습니다. 현재 상승은 뉴스와 테마 흐름 중심으로 판단할 필요가 있습니다."
+        )
+    else:
+        pattern_points = (
+            "과거 500억봉 패턴 통계가 부족하여 신뢰도 있는 수익률 판단은 제한됩니다."
+        )
 
     return {
         "summary": f"{stock_name} 관련 뉴스 {source_count}건을 기준으로 주요 이슈를 점검했습니다.",
@@ -990,6 +1053,7 @@ def build_mock_stock_analysis(
         "theme_points": theme_text,
         "tomorrow_checkpoints": "장 시작 전 추가 공시, 주요 고객사/테마 뉴스, 거래대금 변화를 확인하세요.",
         "knowledge_points": knowledge_points,
+        "pattern_points": pattern_points,
         "sentiment": "neutral",
         "confidence_score": confidence_score,
     }
@@ -1137,6 +1201,7 @@ def save_stock_analysis(
             theme_points,
             tomorrow_checkpoints,
             knowledge_points,
+            pattern_points,
             sentiment,
             confidence_score,
             source_news_count,
@@ -1153,6 +1218,7 @@ def save_stock_analysis(
             %(theme_points)s,
             %(tomorrow_checkpoints)s,
             %(knowledge_points)s,
+            %(pattern_points)s,
             %(sentiment)s,
             %(confidence_score)s,
             %(source_news_count)s,
@@ -1168,6 +1234,7 @@ def save_stock_analysis(
             theme_points = EXCLUDED.theme_points,
             tomorrow_checkpoints = EXCLUDED.tomorrow_checkpoints,
             knowledge_points = EXCLUDED.knowledge_points,
+            pattern_points = EXCLUDED.pattern_points,
             sentiment = EXCLUDED.sentiment,
             confidence_score = EXCLUDED.confidence_score,
             source_news_count = EXCLUDED.source_news_count,
@@ -1192,11 +1259,24 @@ def analyze_stock_news(
     limit: int = 20,
     mock: bool = False,
 ) -> dict[str, Any]:
+    from database.pattern_repository import get_stock_pattern_stats
+
     news_items = get_relevant_news_for_analysis(stock_name=stock_name, limit=limit)
     knowledge_context = get_stock_knowledge_context(stock_name)
-    prompt = build_stock_analysis_prompt(stock_name, news_items, knowledge_context)
+    pattern_stats = get_stock_pattern_stats(stock_name)
+    prompt = build_stock_analysis_prompt(
+        stock_name,
+        news_items,
+        knowledge_context,
+        pattern_stats,
+    )
     analysis = (
-        build_mock_stock_analysis(stock_name, news_items, knowledge_context)
+        build_mock_stock_analysis(
+            stock_name,
+            news_items,
+            knowledge_context,
+            pattern_stats,
+        )
         if mock
         else call_stock_analysis_llm(prompt)
     )

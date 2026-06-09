@@ -570,6 +570,13 @@ def generate_report_command(report_date: date) -> None:
     print(output_path)
 
 
+def build_pattern_stats_command() -> None:
+    from database.pattern_repository import build_stock_pattern_stats
+
+    result = build_stock_pattern_stats()
+    print(f"stock_pattern_stats 구축 완료: {result['stock_count']}개 종목")
+
+
 def _print_pipeline_failure(step_label: str, error: Exception) -> None:
     import traceback
 
@@ -582,6 +589,7 @@ def run_daily_report_command(
     mock: bool = False,
     limit_stocks: int | None = None,
 ) -> None:
+    from database.pattern_repository import build_stock_pattern_stats
     from database.news_repository import (
         analyze_daily_themes,
         analyze_signal_event_stocks,
@@ -591,57 +599,62 @@ def run_daily_report_command(
 
     current_step = "준비"
     try:
-        current_step = "[1/5] 주가 수집 및 500억봉 탐지"
-        print("[1/5] 주가 수집 및 500억봉 탐지 시작")
+        current_step = "[1/6] 주가 수집 및 500억봉 탐지"
+        print("[1/6] 주가 수집 및 500억봉 탐지 시작")
         run(report_date, limit_stocks=limit_stocks)
-        print("[1/5] 완료")
+        print("[1/6] 완료")
 
-        current_step = "[2/5] 뉴스 요약"
-        print("[2/5] 뉴스 요약 시작")
+        current_step = "[2/6] 뉴스 요약"
+        print("[2/6] 뉴스 요약 시작")
         news_summary_result = summarize_news_articles(
             report_date=report_date,
             limit=100,
             mock=mock,
         )
         print(
-            "[2/5] 완료 "
+            "[2/6] 완료 "
             f"(대상 {news_summary_result['target_count']}건, "
             f"성공 {news_summary_result['success_count']}건, "
             f"실패 {news_summary_result['error_count']}건)"
         )
 
-        current_step = "[3/5] 500억봉 종목 AI 분석"
-        print("[3/5] 500억봉 종목 AI 분석 시작")
+        current_step = "[3/6] 패턴 통계 갱신"
+        print("[3/6] 패턴 통계 갱신 시작")
+        pattern_result = build_stock_pattern_stats()
+        print(f"[3/6] 완료 (종목 {pattern_result['stock_count']}건)")
+
+        current_step = "[4/6] 500억봉 종목 AI 분석"
+        print("[4/6] 500억봉 종목 AI 분석 시작")
         signal_result = analyze_signal_event_stocks(
             report_date=report_date,
             limit_news=20,
             mock=mock,
         )
         print(
-            "[3/5] 완료 "
+            "[4/6] 완료 "
             f"(대상 {signal_result['target_count']}건, "
             f"성공 {signal_result['success_count']}건, "
             f"스킵 {signal_result['skip_count']}건, "
             f"실패 {signal_result['error_count']}건)"
         )
 
-        current_step = "[4/5] 일일 테마 분석"
-        print("[4/5] 일일 테마 분석 시작")
+        current_step = "[5/6] 일일 테마 분석"
+        print("[5/6] 일일 테마 분석 시작")
         theme_result = analyze_daily_themes(
             report_date=report_date,
             limit_news_per_stock=5,
             mock=mock,
         )
         print(
-            "[4/5] 완료 "
+            "[5/6] 완료 "
             f"(500억봉 {theme_result['source_stock_count']}건, "
             f"뉴스 {theme_result['source_news_count']}건)"
         )
 
-        current_step = "[5/5] PDF 생성"
-        print("[5/5] PDF 생성 시작")
+        current_step = "[6/6] PDF 생성"
+        print("[6/6] PDF 생성 시작")
         output_path = generate_daily_report(report_date)
-        print(f"[5/5] 완료: {output_path}")
+        print(f"[6/6] 완료: {output_path}")
     except Exception as error:
         _print_pipeline_failure(current_step, error)
         raise SystemExit(1) from error
@@ -729,6 +742,10 @@ def main() -> None:
 
     if args.command == "sync-stock-master":
         sync_stock_master_command()
+        return
+
+    if args.command == "build-pattern-stats":
+        build_pattern_stats_command()
         return
 
     if args.command == "collect-news":

@@ -97,6 +97,18 @@ def _knowledge_points_text(value: Any) -> str:
     return _truncate_with_ellipsis(compact, 260)
 
 
+def _pattern_points_text(value: Any) -> str:
+    text = _text(value)
+    if text == "-":
+        return "과거 500억봉 패턴 통계가 부족하여 신뢰도 있는 수익률 판단은 제한됩니다."
+
+    compact = " ".join(text.replace("\n", " ").split())
+    sentences = compact.split(". ")
+    if len(sentences) > 3:
+        compact = ". ".join(sentences[:3]).rstrip(".") + "."
+    return _truncate_with_ellipsis(compact, 260)
+
+
 def _register_korean_font() -> tuple[str, str]:
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.cidfonts import UnicodeCIDFont
@@ -354,6 +366,7 @@ def _load_stock_analyses(report_date: date) -> list[dict[str, Any]]:
             a.theme_points,
             a.tomorrow_checkpoints,
             a.knowledge_points,
+            a.pattern_points,
             a.sentiment,
             a.confidence_score
         FROM stock_analysis a
@@ -640,6 +653,7 @@ def generate_daily_report(report_date: date) -> Path:
                 for column, label in (
                     ("summary", "한줄 요약"),
                     ("knowledge_points", "지식맵 해석"),
+                    ("pattern_points", "과거 패턴 통계"),
                     ("positive_points", "긍정 요인"),
                     ("risk_points", "리스크"),
                     ("tomorrow_checkpoints", "내일 체크"),
@@ -647,6 +661,8 @@ def generate_daily_report(report_date: date) -> Path:
                     value = analysis.get(column)
                     if column == "knowledge_points":
                         value = _knowledge_points_text(value)
+                    if column == "pattern_points":
+                        value = _pattern_points_text(value)
                     _add_report_section(story, label, value, styles)
 
             story.append(Paragraph("관련 뉴스", styles["heading"]))
