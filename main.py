@@ -523,6 +523,55 @@ def analyze_stock_command(
     print(f"summary: {preview}")
 
 
+def test_investment_grade_command(stock_name: str) -> None:
+    import json
+
+    from database.news_repository import (
+        get_relevant_news_for_analysis,
+        get_stock_analysis,
+        get_stock_knowledge_context,
+    )
+    from database.pattern_repository import get_stock_pattern_stats
+    from report.investment_grade_engine import calculate_investment_grade
+
+    news_items = get_relevant_news_for_analysis(stock_name=stock_name, limit=20)
+    news_text = "\n".join(
+        " ".join(
+            [
+                str(item.get("title") or ""),
+                str(item.get("description") or ""),
+            ]
+        )
+        for item in news_items
+    )
+    analysis_df = get_stock_analysis(stock_name=stock_name)
+    ai_analysis_text = ""
+    if not analysis_df.empty:
+        row = analysis_df.iloc[0].to_dict()
+        ai_analysis_text = "\n".join(
+            str(row.get(column) or "")
+            for column in (
+                "summary",
+                "key_issues",
+                "positive_points",
+                "risk_points",
+                "theme_points",
+                "tomorrow_checkpoints",
+                "knowledge_points",
+                "pattern_points",
+            )
+        )
+
+    result = calculate_investment_grade(
+        stock_name=stock_name,
+        news_text=news_text,
+        ai_analysis_text=ai_analysis_text,
+        knowledge_context=get_stock_knowledge_context(stock_name),
+        pattern_stats=get_stock_pattern_stats(stock_name),
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+
+
 def analyze_signals_command(report_date: date, limit: int, mock: bool) -> None:
     from database.news_repository import analyze_signal_stocks
 
@@ -910,6 +959,12 @@ def main() -> None:
             limit=args.limit or 20,
             mock=args.mock,
         )
+        return
+
+    if args.command == "test-investment-grade":
+        if not args.stock_name:
+            parser.error("test-investment-grade requires --stock-name")
+        test_investment_grade_command(args.stock_name)
         return
 
     if args.command == "analyze-signals":

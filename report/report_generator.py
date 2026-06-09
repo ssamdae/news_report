@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -63,6 +64,15 @@ def _format_score(value: Any) -> str:
         return f"{float(value):.0f}"
     except (TypeError, ValueError):
         return str(value)
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _truncate_with_ellipsis(text: str, max_length: int) -> str:
@@ -350,7 +360,84 @@ def _market_strength_text(daily_theme: dict[str, Any]) -> str:
     return f"{stars}\n{strong_themes}"
 
 
-def _top_pick_text(daily_theme: dict[str, Any]) -> str:
+def _investment_detail(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _investment_section_text(analysis: dict[str, Any]) -> str:
+    grade = _text(analysis.get("investment_grade"))
+    score = _safe_float(analysis.get("investment_score"))
+    detail = _investment_detail(analysis.get("investment_grade_detail"))
+    breakdown = detail.get("score_breakdown") or {}
+    reasons = detail.get("grade_reasons") or []
+    score_text = "-" if score is None else f"{score:.0f}점"
+
+    lines = [
+        f"{grade} / {score_text}",
+        (
+            "점수 구성: "
+            f"패턴 {breakdown.get('pattern', 0)}점 · "
+            f"지식맵 {breakdown.get('knowledge', 0)}점 · "
+            f"뉴스 {breakdown.get('news', 0)}점"
+        ),
+    ]
+    if reasons:
+        lines.append("주요 이유")
+        lines.extend(f"- {reason}" for reason in reasons[:4])
+    return "\n".join(lines)
+
+
+def _top_pick_text(
+    daily_theme: dict[str, Any],
+    analyses: list[dict[str, Any]] | None = None,
+) -> str:
+    analyses = analyses or []
+    ranked_rows = []
+    for analysis in analyses:
+        investment_score = _safe_float(analysis.get("investment_score"))
+        confidence_score = _safe_float(analysis.get("confidence_score")) or 0
+        pattern_stats = get_stock_pattern_stats(_text(analysis.get("stock_name")))
+        day5_avg_return = _safe_float(pattern_stats.get("day5_avg_return"))
+        signal_count = int(pattern_stats.get("signal_count") or 0)
+        if investment_score is None:
+            continue
+        ranked_rows.append(
+            (
+                investment_score,
+                confidence_score,
+                day5_avg_return if day5_avg_return is not None else -9999,
+                signal_count,
+                analysis,
+            )
+        )
+
+    if ranked_rows:
+        lines = []
+        for investment_score, _confidence, _day5, _signals, analysis in sorted(
+            ranked_rows,
+            key=lambda row: row[:4],
+            reverse=True,
+        )[:3]:
+            detail = _investment_detail(analysis.get("investment_grade_detail"))
+            reasons = detail.get("grade_reasons") or []
+            grade = _text(analysis.get("investment_grade"))
+            stock_name = _text(analysis.get("stock_name"))
+            lines.append(f"[{grade}] {stock_name}")
+            lines.append(f"{investment_score:.0f}점")
+            if reasons:
+                lines.append("주요 이유:")
+                lines.extend(f"- {reason}" for reason in reasons[:3])
+            lines.append("")
+        return "\n".join(lines).strip()
+
     value = _text(daily_theme.get("top_picks"))
     if value == "-":
         return "-"
@@ -421,6 +508,9 @@ def _load_stock_analyses(report_date: date) -> list[dict[str, Any]]:
             a.tomorrow_checkpoints,
             a.knowledge_points,
             a.pattern_points,
+            a.investment_score,
+            a.investment_grade,
+            a.investment_grade_detail,
             a.sentiment,
             a.confidence_score
         FROM stock_analysis a
@@ -654,6 +744,11 @@ def generate_daily_report(report_date: date) -> Path:
     signals = _load_signal_events(report_date)
     analyses = _load_stock_analyses(report_date)
     analyses_by_stock = {row["stock_name"]: row for row in analyses}
+    signal_analyses = [
+        analyses_by_stock[row["stock_name"]]
+        for row in signals
+        if row.get("stock_name") in analyses_by_stock
+    ]
     news = _load_relevant_news(report_date, limit=5)
 
     doc = SimpleDocTemplate(
@@ -675,7 +770,7 @@ def generate_daily_report(report_date: date) -> Path:
     story.append(Paragraph("시장 요약", styles["heading"]))
     _add_report_section(story, "시장 요약", daily_theme.get("market_summary"), styles)
     _add_report_section(story, "시장 강도", _market_strength_text(daily_theme), styles)
-    _add_report_section(story, "TOP PICK", _top_pick_text(daily_theme), styles)
+    _add_report_section(story, "TOP PICK", _top_pick_text(daily_theme, signal_analyses), styles)
     story.append(PageBreak())
 
     if signals:
@@ -707,6 +802,7 @@ def generate_daily_report(report_date: date) -> Path:
             else:
                 for column, label in (
                     ("summary", "한줄 요약"),
+                    ("investment_grade", "투자등급"),
                     ("knowledge_points", "지식맵 해석"),
                     ("pattern_points", "과거 패턴 통계"),
                     ("positive_points", "긍정 요인"),
@@ -714,6 +810,8 @@ def generate_daily_report(report_date: date) -> Path:
                     ("tomorrow_checkpoints", "내일 체크"),
                 ):
                     value = analysis.get(column)
+                    if column == "investment_grade":
+                        value = _investment_section_text(analysis)
                     if column == "knowledge_points":
                         value = _knowledge_points_text(value)
                     if column == "pattern_points":

@@ -1194,6 +1194,20 @@ def save_stock_analysis(
     source_news_count: int,
 ) -> None:
     normalized = normalize_stock_analysis(analysis)
+    normalized["investment_score"] = analysis.get("investment_score")
+    normalized["investment_grade"] = _to_text(analysis.get("investment_grade"))
+    normalized["investment_grade_detail"] = (
+        analysis.get("investment_grade_detail")
+        if analysis.get("investment_grade_detail") is not None
+        else json.dumps(
+            {
+                "grade_reasons": [],
+                "score_breakdown": {"pattern": 0, "knowledge": 0, "news": 0},
+                "debug": {},
+            },
+            ensure_ascii=False,
+        )
+    )
     sql = """
         INSERT INTO stock_analysis (
             stock_name,
@@ -1207,6 +1221,9 @@ def save_stock_analysis(
             tomorrow_checkpoints,
             knowledge_points,
             pattern_points,
+            investment_score,
+            investment_grade,
+            investment_grade_detail,
             sentiment,
             confidence_score,
             source_news_count,
@@ -1224,6 +1241,9 @@ def save_stock_analysis(
             %(tomorrow_checkpoints)s,
             %(knowledge_points)s,
             %(pattern_points)s,
+            %(investment_score)s,
+            %(investment_grade)s,
+            %(investment_grade_detail)s::jsonb,
             %(sentiment)s,
             %(confidence_score)s,
             %(source_news_count)s,
@@ -1240,6 +1260,9 @@ def save_stock_analysis(
             tomorrow_checkpoints = EXCLUDED.tomorrow_checkpoints,
             knowledge_points = EXCLUDED.knowledge_points,
             pattern_points = EXCLUDED.pattern_points,
+            investment_score = EXCLUDED.investment_score,
+            investment_grade = EXCLUDED.investment_grade,
+            investment_grade_detail = EXCLUDED.investment_grade_detail,
             sentiment = EXCLUDED.sentiment,
             confidence_score = EXCLUDED.confidence_score,
             source_news_count = EXCLUDED.source_news_count,
@@ -1265,6 +1288,7 @@ def analyze_stock_news(
     mock: bool = False,
 ) -> dict[str, Any]:
     from database.pattern_repository import get_stock_pattern_stats
+    from report.investment_grade_engine import calculate_investment_grade
 
     news_items = get_relevant_news_for_analysis(stock_name=stock_name, limit=limit)
     knowledge_context = get_stock_knowledge_context(stock_name)
@@ -1286,6 +1310,46 @@ def analyze_stock_news(
         else call_stock_analysis_llm(prompt)
     )
     normalized = normalize_stock_analysis(analysis)
+    news_text = "\n".join(
+        " ".join(
+            [
+                _to_text(item.get("title")),
+                _to_text(item.get("description")),
+            ]
+        )
+        for item in news_items
+    )
+    ai_analysis_text = "\n".join(
+        _to_text(normalized.get(column))
+        for column in (
+            "summary",
+            "key_issues",
+            "positive_points",
+            "risk_points",
+            "theme_points",
+            "tomorrow_checkpoints",
+            "knowledge_points",
+            "pattern_points",
+        )
+    )
+    investment_result = calculate_investment_grade(
+        stock_name=stock_name,
+        news_text=news_text,
+        ai_analysis_text=ai_analysis_text,
+        knowledge_context=knowledge_context,
+        pattern_stats=pattern_stats,
+    )
+    normalized["investment_score"] = investment_result["investment_score"]
+    normalized["investment_grade"] = investment_result["investment_grade"]
+    normalized["investment_grade_detail"] = json.dumps(
+        {
+            "grade_reasons": investment_result["grade_reasons"],
+            "score_breakdown": investment_result["score_breakdown"],
+            "debug": investment_result["debug"],
+        },
+        ensure_ascii=False,
+        default=str,
+    )
     save_stock_analysis(
         stock_name=stock_name,
         report_date=report_date,
@@ -2255,6 +2319,11 @@ def get_stock_analysis(
                 risk_points,
                 theme_points,
                 tomorrow_checkpoints,
+                knowledge_points,
+                pattern_points,
+                investment_score,
+                investment_grade,
+                investment_grade_detail,
                 sentiment,
                 confidence_score,
                 source_news_count
@@ -2276,6 +2345,11 @@ def get_stock_analysis(
                 risk_points,
                 theme_points,
                 tomorrow_checkpoints,
+                knowledge_points,
+                pattern_points,
+                investment_score,
+                investment_grade,
+                investment_grade_detail,
                 sentiment,
                 confidence_score,
                 source_news_count
@@ -2300,10 +2374,15 @@ def get_stock_analysis_by_report_date(report_date: date) -> pd.DataFrame:
             a.summary,
             a.sentiment,
             a.confidence_score,
+            a.investment_score,
+            a.investment_grade,
+            a.investment_grade_detail,
             a.source_news_count
         FROM stock_analysis a
         WHERE a.report_date = %(report_date)s
-        ORDER BY a.confidence_score DESC NULLS LAST, a.stock_name
+        ORDER BY a.investment_score DESC NULLS LAST,
+            a.confidence_score DESC NULLS LAST,
+            a.stock_name
     """
 
     with get_connection() as connection:

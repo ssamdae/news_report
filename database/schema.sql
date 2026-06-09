@@ -279,6 +279,9 @@ CREATE TABLE IF NOT EXISTS stock_analysis (
     tomorrow_checkpoints TEXT,
     knowledge_points TEXT,
     pattern_points TEXT,
+    investment_score NUMERIC(5, 2),
+    investment_grade TEXT,
+    investment_grade_detail JSONB,
     sentiment TEXT,
     confidence_score NUMERIC(10, 2),
     source_news_count INTEGER NOT NULL DEFAULT 0,
@@ -292,6 +295,11 @@ ALTER TABLE stock_analysis
 
 ALTER TABLE stock_analysis
     ADD COLUMN IF NOT EXISTS pattern_points TEXT;
+
+ALTER TABLE stock_analysis
+    ADD COLUMN IF NOT EXISTS investment_score NUMERIC(5, 2),
+    ADD COLUMN IF NOT EXISTS investment_grade TEXT,
+    ADD COLUMN IF NOT EXISTS investment_grade_detail JSONB;
 
 CREATE TABLE IF NOT EXISTS stock_pattern_stats (
     stock_code TEXT PRIMARY KEY,
