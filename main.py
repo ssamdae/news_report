@@ -55,6 +55,87 @@ def run(target_date: date, limit_stocks: int | None = None) -> None:
     print(f"news_article 저장 완료: {news_count}건")
 
 
+def backfill_daily_price_command(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    limit_stocks: int | None = None,
+) -> None:
+    import time
+
+    from collector.stock_collector import get_daily_stock_price_history
+    from database.stock_repository import (
+        get_min_pdf_signal_report_date,
+        load_active_stock_master,
+        save_daily_prices,
+    )
+
+    resolved_start = start_date or get_min_pdf_signal_report_date()
+    if resolved_start is None:
+        print("pdf_signal_item.report_date 데이터가 없어 백필 시작일을 결정할 수 없습니다.")
+        return
+    resolved_end = end_date or date.today()
+    if resolved_start > resolved_end:
+        raise ValueError("백필 시작일이 종료일보다 늦습니다.")
+
+    master = load_active_stock_master(limit=limit_stocks)
+    total_count = len(master)
+    success_count = 0
+    fail_count = 0
+    saved_count = 0
+    empty_count = 0
+    errors: list[str] = []
+
+    print(
+        "daily_price 백필 시작: "
+        f"{resolved_start.isoformat()} ~ {resolved_end.isoformat()}"
+    )
+    print(f"백필 대상 종목 수: {total_count}건")
+
+    for index, row in enumerate(master.to_dict("records"), start=1):
+        stock_code = str(row["stock_code"]).zfill(6)
+        stock_name = str(row["stock_name"])
+        market = str(row["market"])
+        try:
+            price_df = get_daily_stock_price_history(
+                stock_code=stock_code,
+                stock_name=stock_name,
+                start_date=resolved_start,
+                end_date=resolved_end,
+                market=market,
+            )
+            if price_df.empty:
+                empty_count += 1
+            else:
+                saved_count += save_daily_prices(price_df)
+                success_count += 1
+        except Exception as error:
+            fail_count += 1
+            message = f"{stock_code} {stock_name}: {error}"
+            errors.append(message)
+            print(f"[WARN] 백필 실패: {message}")
+
+        if index % 100 == 0 or index == total_count:
+            print(
+                f"백필 진행: {index}/{total_count} "
+                f"(성공 {success_count}건, 빈 데이터 {empty_count}건, "
+                f"실패 {fail_count}건, 저장 {saved_count}행)"
+            )
+
+        time.sleep(0.05)
+
+    print("daily_price 백필 완료")
+    print(f"기간: {resolved_start.isoformat()} ~ {resolved_end.isoformat()}")
+    print(f"대상 종목: {total_count}건")
+    print(f"성공 종목: {success_count}건")
+    print(f"빈 데이터 종목: {empty_count}건")
+    print(f"실패 종목: {fail_count}건")
+    print(f"daily_price upsert 행 수: {saved_count}행")
+    if errors:
+        print("실패 예시:")
+        for message in errors[:10]:
+            print(f"- {message}")
+
+
 def build_news_query(stock_name: str, search_term: str, term_type: str) -> str:
     if term_type == "STOCK_NAME":
         return search_term
@@ -672,6 +753,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Stock research system")
     parser.add_argument("command", nargs="?", help="Command to run")
     parser.add_argument("--date", help="Target date in YYYY-MM-DD format")
+    parser.add_argument("--start-date", help="Start date in YYYY-MM-DD format")
+    parser.add_argument("--end-date", help="End date in YYYY-MM-DD format")
     parser.add_argument("--stock-code", help="Stock code for collect-news command")
     parser.add_argument("--stock-name", help="Stock name for collect-news command")
     parser.add_argument(
@@ -733,6 +816,14 @@ def main() -> None:
 
     if args.command == "run":
         run(_parse_date(args.date), limit_stocks=args.limit_stocks)
+        return
+
+    if args.command == "backfill-daily-price":
+        backfill_daily_price_command(
+            start_date=_parse_date(args.start_date) if args.start_date else None,
+            end_date=_parse_date(args.end_date) if args.end_date else None,
+            limit_stocks=args.limit_stocks,
+        )
         return
 
     if args.command == "run-daily-report":

@@ -64,6 +64,21 @@ def load_active_stock_master(limit: int | None = None) -> pd.DataFrame:
         return pd.read_sql_query(sql, connection, params=params)
 
 
+def get_min_pdf_signal_report_date():
+    sql = """
+        SELECT MIN(report_date)
+        FROM pdf_signal_item
+        WHERE report_date IS NOT NULL
+    """
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql)
+            row = cursor.fetchone()
+
+    return row[0] if row else None
+
+
 def save_stock_master(df: pd.DataFrame) -> int:
     if df.empty:
         return 0

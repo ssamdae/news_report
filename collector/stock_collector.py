@@ -412,6 +412,97 @@ def get_daily_stock_price(
             session.close()
 
 
+def get_daily_stock_price_history(
+    stock_code: str,
+    stock_name: str,
+    start_date: str | date,
+    end_date: str | date,
+    market: str = "",
+) -> pd.DataFrame:
+    try:
+        from pykrx import stock
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "pykrx is required. Install dependencies with pip install -r requirements.txt"
+        ) from exc
+
+    normalized_code = _normalize_stock_code(stock_code)
+    normalized_start = _normalize_date(start_date)
+    normalized_end = _normalize_date(end_date)
+    if normalized_start > normalized_end:
+        raise ValueError("start_date must be earlier than or equal to end_date")
+
+    raw = stock.get_market_ohlcv_by_date(
+        normalized_start.strftime("%Y%m%d"),
+        normalized_end.strftime("%Y%m%d"),
+        normalized_code,
+    )
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=OUTPUT_COLUMNS)
+
+    frame = raw.reset_index().copy()
+    date_column = "날짜" if "날짜" in frame.columns else frame.columns[0]
+    required_columns = {"시가", "고가", "저가", "종가", "거래량"}
+    missing_columns = required_columns - set(frame.columns)
+    if missing_columns:
+        raise RuntimeError(
+            f"pykrx OHLCV columns missing for {normalized_code}: "
+            + ", ".join(sorted(missing_columns))
+        )
+
+    frame = frame.rename(
+        columns={
+            date_column: "trade_date",
+            "시가": "open_price",
+            "고가": "high_price",
+            "저가": "low_price",
+            "종가": "close_price",
+            "거래량": "volume",
+            "거래대금": "trading_value",
+        }
+    )
+    frame["trade_date"] = pd.to_datetime(frame["trade_date"]).dt.date
+    frame = frame.sort_values("trade_date").reset_index(drop=True)
+    frame["prev_close_price"] = frame["close_price"].shift(1)
+    if "trading_value" not in frame.columns:
+        frame["trading_value"] = frame["close_price"] * frame["volume"]
+
+    frame["stock_code"] = normalized_code
+    frame["stock_name"] = stock_name
+    frame["market"] = market
+
+    frame = frame[
+        [
+            "trade_date",
+            "market",
+            "stock_code",
+            "stock_name",
+            "open_price",
+            "high_price",
+            "low_price",
+            "close_price",
+            "prev_close_price",
+            "volume",
+            "trading_value",
+        ]
+    ].copy()
+    numeric_columns = [
+        "open_price",
+        "high_price",
+        "low_price",
+        "close_price",
+        "prev_close_price",
+        "volume",
+        "trading_value",
+    ]
+    for column in numeric_columns:
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+
+    return frame.dropna(
+        subset=["open_price", "high_price", "low_price", "close_price", "volume"]
+    ).reset_index(drop=True)
+
+
 def collect_daily_stocks(
     target_date: str | date,
     limit_stocks: int | None = None,
