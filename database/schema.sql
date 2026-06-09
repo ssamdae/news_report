@@ -443,5 +443,8 @@ CREATE INDEX IF NOT EXISTS idx_stock_analysis_stock_name
 CREATE INDEX IF NOT EXISTS idx_stock_analysis_report_date
     ON stock_analysis (report_date DESC);
 
+CREATE INDEX IF NOT EXISTS idx_stock_analysis_analysis_day_stock
+    ON stock_analysis ((analysis_date::date), stock_name, analysis_date DESC);
+
 CREATE INDEX IF NOT EXISTS idx_daily_theme_analysis_report_date
     ON daily_theme_analysis (report_date DESC);

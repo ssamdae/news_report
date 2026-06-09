@@ -1208,7 +1208,36 @@ def save_stock_analysis(
             ensure_ascii=False,
         )
     )
-    sql = """
+    update_sql = """
+        UPDATE stock_analysis
+        SET
+            report_date = %(report_date)s,
+            analysis_date = %(report_date)s::date,
+            summary = %(summary)s,
+            key_issues = %(key_issues)s,
+            positive_points = %(positive_points)s,
+            risk_points = %(risk_points)s,
+            theme_points = %(theme_points)s,
+            tomorrow_checkpoints = %(tomorrow_checkpoints)s,
+            knowledge_points = %(knowledge_points)s,
+            pattern_points = %(pattern_points)s,
+            investment_score = %(investment_score)s,
+            investment_grade = %(investment_grade)s,
+            investment_grade_detail = %(investment_grade_detail)s::jsonb,
+            sentiment = %(sentiment)s,
+            confidence_score = %(confidence_score)s,
+            source_news_count = %(source_news_count)s,
+            updated_at = NOW()
+        WHERE id = (
+            SELECT id
+            FROM stock_analysis
+            WHERE stock_name = %(stock_name)s
+                AND analysis_date::date = %(report_date)s
+            ORDER BY analysis_date DESC, id DESC
+            LIMIT 1
+        )
+    """
+    insert_sql = """
         INSERT INTO stock_analysis (
             stock_name,
             report_date,
@@ -1232,7 +1261,7 @@ def save_stock_analysis(
         VALUES (
             %(stock_name)s,
             %(report_date)s,
-            NOW(),
+            %(report_date)s::date,
             %(summary)s,
             %(key_issues)s,
             %(positive_points)s,
@@ -1249,24 +1278,6 @@ def save_stock_analysis(
             %(source_news_count)s,
             NOW()
         )
-        ON CONFLICT (stock_name, report_date) DO UPDATE
-        SET
-            analysis_date = NOW(),
-            summary = EXCLUDED.summary,
-            key_issues = EXCLUDED.key_issues,
-            positive_points = EXCLUDED.positive_points,
-            risk_points = EXCLUDED.risk_points,
-            theme_points = EXCLUDED.theme_points,
-            tomorrow_checkpoints = EXCLUDED.tomorrow_checkpoints,
-            knowledge_points = EXCLUDED.knowledge_points,
-            pattern_points = EXCLUDED.pattern_points,
-            investment_score = EXCLUDED.investment_score,
-            investment_grade = EXCLUDED.investment_grade,
-            investment_grade_detail = EXCLUDED.investment_grade_detail,
-            sentiment = EXCLUDED.sentiment,
-            confidence_score = EXCLUDED.confidence_score,
-            source_news_count = EXCLUDED.source_news_count,
-            updated_at = NOW()
     """
     params = {
         "stock_name": stock_name,
@@ -1277,7 +1288,9 @@ def save_stock_analysis(
 
     with get_connection() as connection:
         with connection.cursor() as cursor:
-            cursor.execute(sql, params)
+            cursor.execute(update_sql, params)
+            if cursor.rowcount == 0:
+                cursor.execute(insert_sql, params)
         connection.commit()
 
 
@@ -2355,7 +2368,7 @@ def get_stock_analysis(
                 source_news_count
             FROM stock_analysis
             WHERE stock_name = %(stock_name)s
-                AND report_date = %(report_date)s
+                AND analysis_date::date = %(report_date)s
             ORDER BY analysis_date DESC
             LIMIT 1
         """
@@ -2367,7 +2380,7 @@ def get_stock_analysis(
 
 def get_stock_analysis_by_report_date(report_date: date) -> pd.DataFrame:
     sql = """
-        SELECT
+        SELECT DISTINCT ON (a.stock_name)
             a.stock_name,
             a.report_date,
             a.analysis_date,
@@ -2379,14 +2392,144 @@ def get_stock_analysis_by_report_date(report_date: date) -> pd.DataFrame:
             a.investment_grade_detail,
             a.source_news_count
         FROM stock_analysis a
-        WHERE a.report_date = %(report_date)s
-        ORDER BY a.investment_score DESC NULLS LAST,
-            a.confidence_score DESC NULLS LAST,
-            a.stock_name
+        WHERE a.analysis_date::date = %(report_date)s
+        ORDER BY a.stock_name,
+            a.analysis_date DESC,
+            a.id DESC
+    """
+
+    outer_sql = f"""
+        SELECT *
+        FROM ({sql}) latest
+        ORDER BY investment_score DESC NULLS LAST,
+            confidence_score DESC NULLS LAST,
+            stock_name
     """
 
     with get_connection() as connection:
-        return pd.read_sql_query(sql, connection, params={"report_date": report_date})
+        return pd.read_sql_query(
+            outer_sql,
+            connection,
+            params={"report_date": report_date},
+        )
+
+
+def backfill_investment_grades(report_date: date) -> dict[str, Any]:
+    from database.pattern_repository import get_stock_pattern_stats
+    from report.investment_grade_engine import calculate_investment_grade
+
+    select_sql = """
+        SELECT
+            id,
+            stock_name,
+            summary,
+            key_issues,
+            positive_points,
+            risk_points,
+            theme_points,
+            tomorrow_checkpoints,
+            knowledge_points,
+            pattern_points
+        FROM stock_analysis
+        WHERE analysis_date::date = %(report_date)s
+            AND investment_score IS NULL
+        ORDER BY stock_name, analysis_date DESC, id DESC
+    """
+    update_sql = """
+        UPDATE stock_analysis
+        SET
+            investment_score = %(investment_score)s,
+            investment_grade = %(investment_grade)s,
+            investment_grade_detail = %(investment_grade_detail)s::jsonb,
+            updated_at = NOW()
+        WHERE id = %(id)s
+    """
+
+    updated_count = 0
+    errors: list[dict[str, str]] = []
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(select_sql, {"report_date": report_date})
+            rows = _rows_to_dicts(cursor)
+
+            for row in rows:
+                stock_name = row["stock_name"]
+                try:
+                    news_items = get_relevant_news_for_analysis(
+                        stock_name=stock_name,
+                        limit=20,
+                    )
+                    news_text = "\n".join(
+                        " ".join(
+                            [
+                                _to_text(item.get("title")),
+                                _to_text(item.get("description")),
+                            ]
+                        )
+                        for item in news_items
+                    )
+                    ai_analysis_text = "\n".join(
+                        _to_text(row.get(column))
+                        for column in (
+                            "summary",
+                            "key_issues",
+                            "positive_points",
+                            "risk_points",
+                            "theme_points",
+                            "tomorrow_checkpoints",
+                            "knowledge_points",
+                            "pattern_points",
+                        )
+                    )
+                    investment_result = calculate_investment_grade(
+                        stock_name=stock_name,
+                        news_text=news_text,
+                        ai_analysis_text=ai_analysis_text,
+                        knowledge_context=get_stock_knowledge_context(stock_name),
+                        pattern_stats=get_stock_pattern_stats(stock_name),
+                    )
+                    cursor.execute(
+                        update_sql,
+                        {
+                            "id": row["id"],
+                            "investment_score": investment_result[
+                                "investment_score"
+                            ],
+                            "investment_grade": investment_result[
+                                "investment_grade"
+                            ],
+                            "investment_grade_detail": json.dumps(
+                                {
+                                    "grade_reasons": investment_result[
+                                        "grade_reasons"
+                                    ],
+                                    "score_breakdown": investment_result[
+                                        "score_breakdown"
+                                    ],
+                                    "debug": investment_result["debug"],
+                                },
+                                ensure_ascii=False,
+                                default=str,
+                            ),
+                        },
+                    )
+                    updated_count += 1
+                except Exception as error:
+                    errors.append(
+                        {
+                            "stock_name": stock_name,
+                            "error": str(error),
+                        }
+                    )
+        connection.commit()
+
+    return {
+        "report_date": report_date,
+        "target_count": len(rows),
+        "updated_count": updated_count,
+        "error_count": len(errors),
+        "errors": errors,
+    }
 
 
 def get_relevant_news_for_display(

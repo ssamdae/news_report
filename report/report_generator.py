@@ -498,7 +498,7 @@ def _load_signal_events(report_date: date) -> list[dict[str, Any]]:
 
 def _load_stock_analyses(report_date: date) -> list[dict[str, Any]]:
     sql = """
-        SELECT
+        SELECT DISTINCT ON (a.stock_name)
             a.stock_name,
             a.summary,
             a.key_issues,
@@ -514,8 +514,8 @@ def _load_stock_analyses(report_date: date) -> list[dict[str, Any]]:
             a.sentiment,
             a.confidence_score
         FROM stock_analysis a
-        WHERE a.report_date = %(report_date)s
-        ORDER BY a.stock_name
+        WHERE a.analysis_date::date = %(report_date)s
+        ORDER BY a.stock_name, a.analysis_date DESC, a.id DESC
     """
     return _fetch_all(sql, {"report_date": report_date})
 

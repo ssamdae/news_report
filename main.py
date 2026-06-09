@@ -572,6 +572,20 @@ def test_investment_grade_command(stock_name: str) -> None:
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
 
 
+def backfill_investment_grade_command(report_date: date) -> None:
+    from database.news_repository import backfill_investment_grades
+
+    result = backfill_investment_grades(report_date)
+    print(f"투자등급 백필 기준일: {result['report_date']}")
+    print(f"대상: {result['target_count']}건")
+    print(f"업데이트: {result['updated_count']}건")
+    print(f"실패: {result['error_count']}건")
+    if result["errors"]:
+        print("실패 목록:")
+        for row in result["errors"][:20]:
+            print(f"- {row['stock_name']}: {row['error']}")
+
+
 def analyze_signals_command(report_date: date, limit: int, mock: bool) -> None:
     from database.news_repository import analyze_signal_stocks
 
@@ -965,6 +979,12 @@ def main() -> None:
         if not args.stock_name:
             parser.error("test-investment-grade requires --stock-name")
         test_investment_grade_command(args.stock_name)
+        return
+
+    if args.command == "backfill-investment-grade":
+        if not args.date:
+            parser.error("backfill-investment-grade requires --date")
+        backfill_investment_grade_command(_parse_date(args.date))
         return
 
     if args.command == "analyze-signals":
