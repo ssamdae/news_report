@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from database.db import get_connection
+from database.pattern_repository import get_stock_pattern_stats
 
 
 REPORT_ROOT = Path("reports")
@@ -97,16 +98,66 @@ def _knowledge_points_text(value: Any) -> str:
     return _truncate_with_ellipsis(compact, 260)
 
 
-def _pattern_points_text(value: Any) -> str:
+def _format_pattern_pct(value: Any, show_sign: bool = False) -> str:
+    if value is None:
+        return "-"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if show_sign:
+        return f"{number:+.1f}%"
+    return f"{number:.1f}%"
+
+
+def _pattern_interpretation_text(value: Any) -> str:
     text = _text(value)
     if text == "-":
-        return "과거 500억봉 패턴 통계가 부족하여 신뢰도 있는 수익률 판단은 제한됩니다."
+        return ""
 
     compact = " ".join(text.replace("\n", " ").split())
     sentences = compact.split(". ")
     if len(sentences) > 3:
         compact = ". ".join(sentences[:3]).rstrip(".") + "."
-    return _truncate_with_ellipsis(compact, 260)
+    return _truncate_with_ellipsis(compact, 220)
+
+
+def _pattern_stats_text(stats: dict[str, Any], interpretation: Any) -> str:
+    signal_count = int(stats.get("signal_count") or 0)
+    if signal_count <= 0:
+        return "과거 500억봉 패턴 통계가 부족하여 신뢰도 있는 수익률 판단은 제한됩니다."
+
+    lines = [
+        f"발생횟수: {signal_count}회",
+        (
+            "D+1 승률/평균: "
+            f"{_format_pattern_pct(stats.get('next_day_win_rate'))} / "
+            f"{_format_pattern_pct(stats.get('next_day_avg_return'), show_sign=True)}"
+        ),
+        (
+            "D+3 승률/평균: "
+            f"{_format_pattern_pct(stats.get('day3_win_rate'))} / "
+            f"{_format_pattern_pct(stats.get('day3_avg_return'), show_sign=True)}"
+        ),
+        (
+            "D+5 승률/평균: "
+            f"{_format_pattern_pct(stats.get('day5_win_rate'))} / "
+            f"{_format_pattern_pct(stats.get('day5_avg_return'), show_sign=True)}"
+        ),
+        (
+            "5D 최대/최소: "
+            f"{_format_pattern_pct(stats.get('max_return_5d'), show_sign=True)} / "
+            f"{_format_pattern_pct(stats.get('min_return_5d'), show_sign=True)}"
+        ),
+    ]
+    if signal_count < 3:
+        lines.append("※ 표본 부족으로 통계 신뢰도는 낮습니다.")
+
+    interpretation_text = _pattern_interpretation_text(interpretation)
+    if interpretation_text:
+        lines.append(f"AI 해석: {interpretation_text}")
+
+    return "\n".join(lines)
 
 
 def _register_korean_font() -> tuple[str, str]:
@@ -644,6 +695,7 @@ def generate_daily_report(report_date: date) -> Path:
             _add_separator(story)
             stock_name = _text(signal.get("stock_name"))
             analysis = analyses_by_stock.get(stock_name)
+            pattern_stats = get_stock_pattern_stats(stock_name)
             title = f"{stock_name} / 대표테마: {_text(signal.get('primary_theme'))}"
             story.append(Paragraph(title, styles["stock_heading"]))
 
@@ -662,7 +714,7 @@ def generate_daily_report(report_date: date) -> Path:
                     if column == "knowledge_points":
                         value = _knowledge_points_text(value)
                     if column == "pattern_points":
-                        value = _pattern_points_text(value)
+                        value = _pattern_stats_text(pattern_stats, value)
                     _add_report_section(story, label, value, styles)
 
             story.append(Paragraph("관련 뉴스", styles["heading"]))
