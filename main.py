@@ -745,6 +745,38 @@ def test_investment_grade_command(stock_name: str) -> None:
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
 
 
+def test_theme_ranking_command(report_date: date) -> None:
+    from report.theme_ranking_engine import build_theme_rankings
+
+    rankings = build_theme_rankings(report_date)
+    print(f"테마 순위 기준일: {report_date.isoformat()}")
+    if not rankings:
+        print("테마 랭킹 데이터가 없습니다.")
+        return
+
+    print("테마 순위")
+    print("-" * 72)
+    for index, row in enumerate(rankings, start=1):
+        leader_score = row.get("leader_score")
+        leader_score_text = "-" if leader_score is None else f"{leader_score:.0f}"
+        leader_grade = row.get("leader_grade") or "-"
+        follower_text = ", ".join(row.get("followers") or []) or "-"
+        breakdown = row.get("score_breakdown") or {}
+        print(f"{index}. {row['theme']} ({row['theme_score']}점)")
+        print(
+            f"   대장주: {row.get('leader') or '-'} "
+            f"{leader_grade}{leader_score_text}"
+        )
+        print(f"   후속주: {follower_text}")
+        print(
+            "   산식: "
+            f"종목수 {breakdown.get('stock_count', 0)} + "
+            f"평균점수 {breakdown.get('average_investment', 0)} + "
+            f"A/B비율 {breakdown.get('ab_grade_ratio', 0)} + "
+            f"거래대금 {breakdown.get('trading_concentration', 0)}"
+        )
+
+
 def backfill_investment_grade_command(report_date: date) -> None:
     from database.news_repository import backfill_investment_grades
 
@@ -1284,6 +1316,12 @@ def main() -> None:
         if not args.stock_name:
             parser.error("test-investment-grade requires --stock-name")
         test_investment_grade_command(args.stock_name)
+        return
+
+    if args.command == "test-theme-ranking":
+        if not args.date:
+            parser.error("test-theme-ranking requires --date")
+        test_theme_ranking_command(_parse_date(args.date))
         return
 
     if args.command == "backfill-investment-grade":

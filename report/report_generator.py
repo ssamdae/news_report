@@ -7,6 +7,7 @@ from typing import Any
 
 from database.db import get_connection
 from database.pattern_repository import get_stock_pattern_stats
+from report.theme_ranking_engine import build_theme_rankings
 
 
 REPORT_ROOT = Path("reports")
@@ -494,6 +495,62 @@ def _leading_theme_text_from_inputs(
     )
 
 
+def _theme_stock_label(
+    stock_name: Any,
+    grade: Any,
+    score: Any,
+) -> str:
+    name_text = _text(stock_name)
+    grade_text = _text(grade)
+    score_value = _safe_float(score)
+    if grade_text == "-" and score_value is None:
+        return name_text
+    if score_value is None:
+        return f"{name_text} {grade_text}"
+    return f"{name_text} {grade_text}{score_value:.0f}"
+
+
+def _theme_ranking_text(theme_rankings: list[dict[str, Any]]) -> str:
+    if not theme_rankings:
+        return "주도 테마 랭킹을 산출할 500억봉 종목 데이터가 부족합니다."
+
+    lines: list[str] = []
+    for index, row in enumerate(theme_rankings[:5], start=1):
+        lines.append(
+            f"{index}위 {row['theme']} ({row['theme_score']}점)"
+            f" / 종목 {row['stock_count']}개"
+        )
+        lines.append(
+            "대장주: "
+            + _theme_stock_label(
+                row.get("leader"),
+                row.get("leader_grade"),
+                row.get("leader_score"),
+            )
+        )
+        follower_details = row.get("follower_details") or []
+        if follower_details:
+            followers = [
+                _theme_stock_label(
+                    follower.get("stock_name"),
+                    follower.get("investment_grade"),
+                    follower.get("investment_score"),
+                )
+                for follower in follower_details
+            ]
+        else:
+            followers = [str(name) for name in (row.get("followers") or [])]
+        lines.append("후속주: " + (", ".join(followers) if followers else "-"))
+        lines.append(
+            "구성: "
+            f"평균 투자점수 {row.get('average_investment_score', 0):.1f}, "
+            f"B등급 이상 {row.get('ab_grade_count', 0)}개, "
+            f"거래대금 비중 {row.get('trading_share', 0):.1f}%"
+        )
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
 def _market_summary_text(
     report_date: date,
     daily_theme: dict[str, Any],
@@ -625,8 +682,23 @@ def _pending_analysis_text(report_date: date, stock_name: str) -> str:
 def _top_pick_text(
     daily_theme: dict[str, Any],
     analyses: list[dict[str, Any]] | None = None,
+    theme_rankings: list[dict[str, Any]] | None = None,
 ) -> str:
     analyses = analyses or []
+    theme_priority: dict[str, int] = {}
+    for priority, theme_row in enumerate((theme_rankings or [])[:2], start=1):
+        weight = 3 - priority
+        stock_names = list(theme_row.get("stocks") or [])
+        if not stock_names:
+            stock_names = [theme_row.get("leader")]
+            stock_names.extend(theme_row.get("followers") or [])
+        for stock_name in stock_names:
+            if stock_name:
+                theme_priority[str(stock_name)] = max(
+                    theme_priority.get(str(stock_name), 0),
+                    weight,
+                )
+
     ranked_rows = []
     for analysis in analyses:
         investment_score = _safe_float(analysis.get("investment_score"))
@@ -634,10 +706,12 @@ def _top_pick_text(
         pattern_stats = _pattern_stats_from_analysis(analysis)
         day5_avg_return = _safe_float(pattern_stats.get("day5_avg_return"))
         signal_count = int(pattern_stats.get("signal_count") or 0)
+        stock_name = _text(analysis.get("stock_name"))
         if investment_score is None:
             continue
         ranked_rows.append(
             (
+                theme_priority.get(stock_name, 0),
                 investment_score,
                 confidence_score,
                 day5_avg_return if day5_avg_return is not None else -9999,
@@ -648,9 +722,9 @@ def _top_pick_text(
 
     if ranked_rows:
         lines = []
-        for index, (investment_score, _confidence, _day5, _signals, analysis) in enumerate(sorted(
+        for index, (_theme_priority, investment_score, _confidence, _day5, _signals, analysis) in enumerate(sorted(
             ranked_rows,
-            key=lambda row: row[:4],
+            key=lambda row: row[:5],
             reverse=True,
         )[:3], start=1):
             detail = _investment_detail(analysis.get("investment_grade_detail"))
@@ -1018,6 +1092,7 @@ def generate_daily_report(report_date: date) -> Path:
     daily_theme = _load_daily_theme_analysis(report_date) or {}
     signals = _load_signal_events(report_date)
     analyses = _load_stock_analyses(report_date)
+    theme_rankings = build_theme_rankings(report_date)
     analyses_by_stock = {row["stock_name"]: row for row in analyses}
     signal_analyses = [
         analyses_by_stock[row["stock_name"]]
@@ -1061,7 +1136,18 @@ def generate_daily_report(report_date: date) -> Path:
         _leading_theme_text_from_inputs(daily_theme, signals),
         styles,
     )
-    _add_report_section(story, "TOP PICK", _top_pick_text(daily_theme, signal_analyses), styles)
+    _add_report_section(
+        story,
+        "주도 테마 랭킹",
+        _theme_ranking_text(theme_rankings),
+        styles,
+    )
+    _add_report_section(
+        story,
+        "TOP PICK",
+        _top_pick_text(daily_theme, signal_analyses, theme_rankings),
+        styles,
+    )
     _add_report_section(story, "투자 유의사항", _investment_notice_text(), styles)
     story.append(PageBreak())
 
