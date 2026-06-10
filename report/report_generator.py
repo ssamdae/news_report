@@ -403,31 +403,170 @@ def _add_report_section(
 
 
 def _market_strength_text(daily_theme: dict[str, Any]) -> str:
-    try:
-        score = float(daily_theme.get("confidence_score") or 0)
-    except (TypeError, ValueError):
-        score = 0
+    return _market_strength_text_from_inputs(daily_theme, [], [])
 
-    if score >= 80:
+
+def _market_strength_text_from_inputs(
+    daily_theme: dict[str, Any],
+    signals: list[dict[str, Any]],
+    analyses: list[dict[str, Any]],
+) -> str:
+    investment_scores = [
+        score
+        for score in (_safe_float(row.get("investment_score")) for row in analyses)
+        if score is not None
+    ]
+    average_score = (
+        sum(investment_scores) / len(investment_scores)
+        if investment_scores
+        else _safe_float(daily_theme.get("confidence_score")) or 0
+    )
+    grade_count = sum(
+        1
+        for row in analyses
+        if str(row.get("investment_grade") or "") in {"A", "B"}
+    )
+    signal_count = len(signals)
+    theme_counts: dict[str, int] = {}
+    for row in signals:
+        theme = _text(row.get("primary_theme"))
+        if theme != "-":
+            theme_counts[theme] = theme_counts.get(theme, 0) + 1
+    concentration = (
+        max(theme_counts.values()) / signal_count
+        if signal_count and theme_counts
+        else 0
+    )
+
+    strength_score = average_score
+    strength_score += min(10, grade_count * 2)
+    strength_score += min(8, signal_count)
+    strength_score += concentration * 10
+
+    if strength_score >= 85:
         stars = "★★★★★"
-    elif score >= 65:
+    elif strength_score >= 70:
         stars = "★★★★☆"
-    elif score >= 50:
+    elif strength_score >= 55:
         stars = "★★★☆☆"
     else:
         stars = "★★☆☆☆"
 
     strong_themes = _text(daily_theme.get("strong_themes"))
-    if strong_themes == "-":
-        return f"{stars}"
-    return f"{stars}\n{strong_themes}"
+    detail = (
+        f"평균 투자점수 {average_score:.1f}점, "
+        f"B등급 이상 {grade_count}개, 500억봉 {signal_count}개 기준"
+    )
+    if strong_themes != "-":
+        detail = f"{detail}\n{strong_themes}"
+    return f"{stars}\n{detail}"
 
 
 def _leading_theme_text(daily_theme: dict[str, Any]) -> str:
+    return _leading_theme_text_from_inputs(daily_theme, [])
+
+
+def _leading_theme_text_from_inputs(
+    daily_theme: dict[str, Any],
+    signals: list[dict[str, Any]],
+) -> str:
     theme_rankings = _text(daily_theme.get("theme_rankings"))
     if theme_rankings != "-":
         return theme_rankings
-    return _text(daily_theme.get("strong_themes"))
+    strong_themes = _text(daily_theme.get("strong_themes"))
+    if strong_themes != "-":
+        return strong_themes
+
+    grouped: dict[str, list[str]] = {}
+    for row in signals:
+        theme = _text(row.get("primary_theme"))
+        stock_name = _text(row.get("stock_name"))
+        if theme == "-" or stock_name == "-":
+            continue
+        grouped.setdefault(theme, []).append(stock_name)
+    if not grouped:
+        return "당일 500억봉 종목의 대표테마 데이터가 부족합니다."
+
+    ranked = sorted(grouped.items(), key=lambda item: len(item[1]), reverse=True)
+    return "\n".join(
+        f"{index}. {theme}: {', '.join(stocks[:5])}"
+        for index, (theme, stocks) in enumerate(ranked[:5], start=1)
+    )
+
+
+def _market_summary_text(
+    report_date: date,
+    daily_theme: dict[str, Any],
+    signals: list[dict[str, Any]],
+    analyses_by_stock: dict[str, dict[str, Any]],
+) -> str:
+    summary = _text(daily_theme.get("market_summary"))
+    if summary != "-":
+        return summary
+
+    if not signals:
+        return f"{report_date.isoformat()} 시장에서는 500억봉 포착 종목 데이터가 부족합니다."
+
+    theme_counts: dict[str, list[str]] = {}
+    for row in signals:
+        theme = _text(row.get("primary_theme"))
+        stock_name = _text(row.get("stock_name"))
+        if theme != "-" and stock_name != "-":
+            theme_counts.setdefault(theme, []).append(stock_name)
+    top_theme, top_theme_stocks = ("개별 테마", [])
+    if theme_counts:
+        top_theme, top_theme_stocks = max(
+            theme_counts.items(),
+            key=lambda item: len(item[1]),
+        )
+
+    top_trading = sorted(
+        signals,
+        key=lambda row: _safe_float(row.get("trading_value")) or 0,
+        reverse=True,
+    )[:3]
+    top_trading_names = [
+        _text(row.get("stock_name"))
+        for row in top_trading
+        if _text(row.get("stock_name")) != "-"
+    ]
+    top_grade_rows = sorted(
+        [
+            row
+            for row in analyses_by_stock.values()
+            if _safe_float(row.get("investment_score")) is not None
+        ],
+        key=lambda row: _safe_float(row.get("investment_score")) or 0,
+        reverse=True,
+    )[:3]
+    top_grade_names = [_text(row.get("stock_name")) for row in top_grade_rows]
+    sub_themes = [
+        theme
+        for theme, _stocks in sorted(
+            theme_counts.items(),
+            key=lambda item: len(item[1]),
+            reverse=True,
+        )[1:4]
+    ]
+
+    parts = [
+        f"{report_date.isoformat()} 시장에서는 {top_theme} 테마가 가장 강하게 부각되었습니다.",
+    ]
+    if top_theme_stocks:
+        parts.append(
+            f"{', '.join(top_theme_stocks[:5])} 등 관련 종목이 다수 포착되었습니다."
+        )
+    if sub_themes:
+        parts.append(f"{', '.join(sub_themes)} 테마도 함께 관찰되었습니다.")
+    if top_trading_names:
+        parts.append(
+            f"거래대금 기준으로는 {', '.join(top_trading_names)}가 상위권을 차지했습니다."
+        )
+    if top_grade_names:
+        parts.append(
+            f"투자등급 점수 기준 상위 종목은 {', '.join(top_grade_names)}입니다."
+        )
+    return " ".join(parts)
 
 
 def _investment_notice_text() -> str:
@@ -473,6 +612,16 @@ def _investment_section_text(analysis: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _pending_analysis_text(report_date: date, stock_name: str) -> str:
+    return "\n".join(
+        [
+            "AI 종목 분석이 아직 생성되지 않았습니다.",
+            "다음 명령으로 보완 가능:",
+            f"python main.py analyze-stock --date {report_date.isoformat()} --stock-name {stock_name}",
+        ]
+    )
+
+
 def _top_pick_text(
     daily_theme: dict[str, Any],
     analyses: list[dict[str, Any]] | None = None,
@@ -506,12 +655,16 @@ def _top_pick_text(
         )[:3], start=1):
             detail = _investment_detail(analysis.get("investment_grade_detail"))
             reasons = detail.get("grade_reasons") or []
+            breakdown = detail.get("score_breakdown") or {}
             grade = _text(analysis.get("investment_grade"))
             stock_name = _text(analysis.get("stock_name"))
             lines.append(f"{index}. [{grade}] {stock_name} / {investment_score:.0f}점")
-            if reasons:
+            display_reasons = list(reasons[:3])
+            if grade == "C" or int(breakdown.get("news") or 0) <= 10:
+                display_reasons.append("뉴스 모멘텀 제한으로 등급 상단이 제한")
+            if display_reasons:
                 lines.append("주요 이유:")
-                lines.extend(f"- {reason}" for reason in reasons[:3])
+                lines.extend(f"- {reason}" for reason in display_reasons[:4])
             lines.append("")
         return "\n".join(lines).strip()
 
@@ -890,9 +1043,24 @@ def generate_daily_report(report_date: date) -> Path:
     story.append(Spacer(1, 24))
 
     story.append(Paragraph("시장 요약", styles["heading"]))
-    _add_report_section(story, "시장 요약", daily_theme.get("market_summary"), styles)
-    _add_report_section(story, "시장 강도", _market_strength_text(daily_theme), styles)
-    _add_report_section(story, "오늘의 주도 테마", _leading_theme_text(daily_theme), styles)
+    _add_report_section(
+        story,
+        "시장 요약",
+        _market_summary_text(report_date, daily_theme, signals, analyses_by_stock),
+        styles,
+    )
+    _add_report_section(
+        story,
+        "시장 강도",
+        _market_strength_text_from_inputs(daily_theme, signals, signal_analyses),
+        styles,
+    )
+    _add_report_section(
+        story,
+        "오늘의 주도 테마",
+        _leading_theme_text_from_inputs(daily_theme, signals),
+        styles,
+    )
     _add_report_section(story, "TOP PICK", _top_pick_text(daily_theme, signal_analyses), styles)
     _add_report_section(story, "투자 유의사항", _investment_notice_text(), styles)
     story.append(PageBreak())
@@ -924,7 +1092,25 @@ def generate_daily_report(report_date: date) -> Path:
             story.append(Paragraph(title, styles["stock_heading"]))
 
             if analysis is None:
-                story.append(_paragraph("분석 데이터 없음", styles["body"]))
+                _add_report_section(story, "투자등급", "분석 전", styles)
+                _add_report_section(
+                    story,
+                    "지식맵 해석",
+                    _knowledge_map_text(stock_name, signal, {}, pattern_stats),
+                    styles,
+                )
+                _add_report_section(
+                    story,
+                    "과거 패턴 통계",
+                    _pattern_stats_text(pattern_stats, None),
+                    styles,
+                )
+                _add_report_section(
+                    story,
+                    "분석 상태",
+                    _pending_analysis_text(report_date, stock_name),
+                    styles,
+                )
             else:
                 for column, label in (
                     ("summary", "한줄 요약"),

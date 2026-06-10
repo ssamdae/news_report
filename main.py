@@ -586,6 +586,67 @@ def backfill_investment_grade_command(report_date: date) -> None:
             print(f"- {row['stock_name']}: {row['error']}")
 
 
+def check_missing_analysis_command(report_date: date, run_missing: bool = False) -> None:
+    from database.db import get_connection
+
+    sql = """
+        SELECT DISTINCT
+            sm.stock_name
+        FROM signal_event se
+        JOIN stock_master sm
+            ON sm.stock_code = se.stock_code
+        LEFT JOIN LATERAL (
+            SELECT id
+            FROM stock_analysis sa
+            WHERE sa.stock_name = sm.stock_name
+                AND sa.analysis_date::date = %(report_date)s
+            ORDER BY sa.analysis_date DESC, sa.id DESC
+            LIMIT 1
+        ) latest_analysis ON TRUE
+        WHERE se.signal_date = %(report_date)s
+            AND latest_analysis.id IS NULL
+        ORDER BY sm.stock_name
+    """
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, {"report_date": report_date})
+            missing_stocks = [row[0] for row in cursor.fetchall()]
+
+    print("분석 누락 종목:")
+    if missing_stocks:
+        for stock_name in missing_stocks:
+            print(f"* {stock_name}")
+    print(f"총 {len(missing_stocks)}개")
+
+    if not run_missing or not missing_stocks:
+        return
+
+    from database.news_repository import StockAnalysisLlmError, analyze_stock_news
+
+    success_count = 0
+    fail_rows: list[tuple[str, str]] = []
+    for stock_name in missing_stocks:
+        try:
+            analyze_stock_news(
+                stock_name=stock_name,
+                report_date=report_date,
+                limit=20,
+                mock=False,
+            )
+            success_count += 1
+            print(f"분석 완료: {stock_name}")
+        except StockAnalysisLlmError as error:
+            fail_rows.append((stock_name, str(error)))
+            print(f"분석 실패: {stock_name} - {error}")
+        except Exception as error:
+            fail_rows.append((stock_name, str(error)))
+            print(f"분석 실패: {stock_name} - {error}")
+
+    print(f"자동 분석 성공: {success_count}개")
+    print(f"자동 분석 실패: {len(fail_rows)}개")
+
+
 def analyze_signals_command(report_date: date, limit: int, mock: bool) -> None:
     from database.news_repository import analyze_signal_stocks
 
@@ -854,6 +915,11 @@ def main() -> None:
         help="Use mock output for analyze-stock without calling an LLM",
     )
     parser.add_argument(
+        "--run",
+        action="store_true",
+        help="Run automatic remediation for commands that support it",
+    )
+    parser.add_argument(
         "--limit-news-per-stock",
         type=int,
         default=5,
@@ -985,6 +1051,15 @@ def main() -> None:
         if not args.date:
             parser.error("backfill-investment-grade requires --date")
         backfill_investment_grade_command(_parse_date(args.date))
+        return
+
+    if args.command == "check-missing-analysis":
+        if not args.date:
+            parser.error("check-missing-analysis requires --date")
+        check_missing_analysis_command(
+            report_date=_parse_date(args.date),
+            run_missing=args.run,
+        )
         return
 
     if args.command == "analyze-signals":
