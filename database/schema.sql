@@ -343,6 +343,38 @@ CREATE TABLE IF NOT EXISTS daily_theme_analysis (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS backtest_500b_two_bearish_result (
+    id BIGSERIAL PRIMARY KEY,
+    strategy_name TEXT NOT NULL,
+    stock_code TEXT,
+    stock_name TEXT,
+    signal_date DATE,
+    entry_date DATE,
+    entry_price NUMERIC(20, 2),
+    d0_volume BIGINT,
+    entry_volume BIGINT,
+    volume_ratio_to_d0 NUMERIC(12, 6),
+    first_bearish_date DATE,
+    second_bearish_date DATE,
+    first_bearish_volume BIGINT,
+    second_bearish_volume BIGINT,
+    vol_down_seq BOOLEAN,
+    ret_d3 NUMERIC(12, 4),
+    ret_d5 NUMERIC(12, 4),
+    ret_d10 NUMERIC(12, 4),
+    ret_d20 NUMERIC(12, 4),
+    max_ret_20d NUMERIC(12, 4),
+    min_ret_20d NUMERIC(12, 4),
+    params_json JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_500b_two_bearish_created
+    ON backtest_500b_two_bearish_result (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_500b_two_bearish_signal
+    ON backtest_500b_two_bearish_result (signal_date, stock_code);
+
 ALTER TABLE daily_theme_analysis
     ADD COLUMN IF NOT EXISTS market_drivers TEXT;
 

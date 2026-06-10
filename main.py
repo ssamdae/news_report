@@ -14,6 +14,14 @@ def _parse_date(value: str | None) -> date:
     return datetime.strptime(value, "%Y-%m-%d").date()
 
 
+def _parse_int_list(value: str) -> list[int]:
+    return [int(item.strip()) for item in value.split(",") if item.strip()]
+
+
+def _parse_float_list(value: str) -> list[float]:
+    return [float(item.strip()) for item in value.split(",") if item.strip()]
+
+
 def run(target_date: date, limit_stocks: int | None = None) -> None:
     from collector.news_collector import collect_news_for_signals
     from collector.stock_collector import collect_daily_stocks
@@ -134,6 +142,138 @@ def backfill_daily_price_command(
         print("실패 예시:")
         for message in errors[:10]:
             print(f"- {message}")
+
+
+def _format_pct(value) -> str:
+    if value is None:
+        return "-"
+    return f"{float(value):.2f}%"
+
+
+def _print_backtest_cases(title: str, rows: list[dict]) -> None:
+    if not rows:
+        return
+    print(title)
+    for row in rows[:10]:
+        ret_d20 = row.get("ret_d20")
+        ret_text = "-" if ret_d20 is None else f"{float(ret_d20):+.2f}%"
+        print(
+            f"- {row['stock_name']} {row['signal_date']} "
+            f"entry {row['entry_date']} D+20 {ret_text}"
+        )
+
+
+def _print_500b_two_bearish_backtest_result(result: dict) -> None:
+    params = result["params"]
+    summary = result["summary"]
+
+    print("[500억봉 2음봉 백테스트]")
+    print(f"기간: {params['from_date']} ~ {params['to_date']}")
+    print(f"lookahead_days: {params['lookahead_days']}")
+    print(f"volume_ratio: {float(params['volume_ratio']):.2f}")
+    print(f"이벤트 수: {result['event_count']}건")
+    print(f"결과 저장: {result['saved_count']}건")
+    if result.get("csv_path"):
+        print(f"CSV: {result['csv_path']}")
+    print()
+    print("전략별 요약")
+    print("-" * 98)
+    print(
+        f"{'전략명':<28} {'건수':>6} {'D+5승률':>9} {'D+5평균':>9} "
+        f"{'D+10승률':>10} {'D+10평균':>10} {'20D Max':>9} {'20D Min':>9} {'손익비':>8}"
+    )
+    strategy_order = [
+        "D0 종가매수",
+        "첫 거래량감소 음봉",
+        "거래량감소 연속 2음봉",
+        "연속 2음봉 + 거래량 추가감소",
+    ]
+    for strategy_name in strategy_order:
+        row = summary.get(strategy_name, {"count": 0})
+        profit_loss_ratio = row.get("profit_loss_ratio")
+        profit_loss_ratio_text = (
+            "-"
+            if profit_loss_ratio is None
+            else f"{float(profit_loss_ratio):.2f}"
+        )
+        print(
+            f"{strategy_name:<28} "
+            f"{int(row.get('count') or 0):>6} "
+            f"{_format_pct(row.get('d5_win_rate')):>9} "
+            f"{_format_pct(row.get('d5_avg_return')):>9} "
+            f"{_format_pct(row.get('d10_win_rate')):>10} "
+            f"{_format_pct(row.get('d10_avg_return')):>10} "
+            f"{_format_pct(row.get('avg_max_ret_20d')):>9} "
+            f"{_format_pct(row.get('avg_min_ret_20d')):>9} "
+            f"{profit_loss_ratio_text:>8}"
+        )
+
+    for strategy_name in strategy_order:
+        row = summary.get(strategy_name)
+        if not row:
+            continue
+        print()
+        print(f"[{strategy_name}]")
+        _print_backtest_cases("최고 사례 TOP 10", row.get("best_cases") or [])
+        _print_backtest_cases("최악 사례 TOP 10", row.get("worst_cases") or [])
+
+
+def backtest_500b_two_bearish_command(
+    from_date: date,
+    to_date: date,
+    lookahead_days: int,
+    volume_ratio: float,
+    holding_days: list[int],
+    min_d0_trade_amount: int,
+    dedupe_window_days: int | None,
+    export_csv: bool,
+    sweep_volume_ratio: list[float] | None = None,
+) -> None:
+    from database.backtest_repository import run_500b_two_bearish_backtest
+
+    ratios = sweep_volume_ratio or [volume_ratio]
+    sweep_rows = []
+    for ratio in ratios:
+        result = run_500b_two_bearish_backtest(
+            from_date=from_date,
+            to_date=to_date,
+            lookahead_days=lookahead_days,
+            volume_ratio=ratio,
+            holding_days=holding_days,
+            min_d0_trade_amount=min_d0_trade_amount,
+            dedupe_window_days=dedupe_window_days,
+            export_csv=export_csv,
+        )
+        _print_500b_two_bearish_backtest_result(result)
+        two_bearish = result["summary"].get("거래량감소 연속 2음봉", {})
+        sweep_rows.append(
+            {
+                "volume_ratio": ratio,
+                "count": two_bearish.get("count", 0),
+                "d5_win_rate": two_bearish.get("d5_win_rate"),
+                "d5_avg_return": two_bearish.get("d5_avg_return"),
+                "d10_win_rate": two_bearish.get("d10_win_rate"),
+                "d10_avg_return": two_bearish.get("d10_avg_return"),
+            }
+        )
+
+    if len(sweep_rows) > 1:
+        print()
+        print("[volume_ratio sweep 비교: 거래량감소 연속 2음봉]")
+        print("-" * 72)
+        print(
+            f"{'ratio':>8} {'건수':>6} {'D+5승률':>10} {'D+5평균':>10} "
+            f"{'D+10승률':>10} {'D+10평균':>10}"
+        )
+        for row in sweep_rows:
+            print(
+                f"{row['volume_ratio']:>8.2f} "
+                f"{int(row['count'] or 0):>6} "
+                f"{_format_pct(row.get('d5_win_rate')):>10} "
+                f"{_format_pct(row.get('d5_avg_return')):>10} "
+                f"{_format_pct(row.get('d10_win_rate')):>10} "
+                f"{_format_pct(row.get('d10_avg_return')):>10}"
+            )
 
 
 def build_news_query(stock_name: str, search_term: str, term_type: str) -> str:
@@ -879,6 +1019,8 @@ def main() -> None:
     parser.add_argument("--date", help="Target date in YYYY-MM-DD format")
     parser.add_argument("--start-date", help="Start date in YYYY-MM-DD format")
     parser.add_argument("--end-date", help="End date in YYYY-MM-DD format")
+    parser.add_argument("--from-date", help="Backtest start date in YYYY-MM-DD format")
+    parser.add_argument("--to-date", help="Backtest end date in YYYY-MM-DD format")
     parser.add_argument("--stock-code", help="Stock code for collect-news command")
     parser.add_argument("--stock-name", help="Stock name for collect-news command")
     parser.add_argument(
@@ -936,6 +1078,43 @@ def main() -> None:
         default=20,
         help="Maximum relevant news rows per stock for analyze-signal-stocks",
     )
+    parser.add_argument(
+        "--lookahead-days",
+        type=int,
+        default=20,
+        help="Lookahead trading days for two-bearish backtest",
+    )
+    parser.add_argument(
+        "--volume-ratio",
+        type=float,
+        default=0.3,
+        help="Volume threshold ratio to D0 volume for two-bearish backtest",
+    )
+    parser.add_argument(
+        "--sweep-volume-ratio",
+        help="Comma separated volume ratios, e.g. 0.1,0.2,0.3,0.4",
+    )
+    parser.add_argument(
+        "--holding-days",
+        default="3,5,10,20",
+        help="Comma separated holding days for backtest returns",
+    )
+    parser.add_argument(
+        "--min-d0-trade-amount",
+        type=int,
+        default=50_000_000_000,
+        help="Minimum D0 trading value for signal events",
+    )
+    parser.add_argument(
+        "--dedupe-window-days",
+        type=int,
+        help="Remove same-stock signal events within this many trading days",
+    )
+    parser.add_argument(
+        "--export-csv",
+        action="store_true",
+        help="Export backtest result rows to CSV",
+    )
     args = parser.parse_args()
 
     if args.command == "test-db":
@@ -952,6 +1131,26 @@ def main() -> None:
             start_date=_parse_date(args.start_date) if args.start_date else None,
             end_date=_parse_date(args.end_date) if args.end_date else None,
             limit_stocks=args.limit_stocks,
+        )
+        return
+
+    if args.command == "backtest-500b-two-bearish":
+        if not args.from_date or not args.to_date:
+            parser.error("backtest-500b-two-bearish requires --from-date and --to-date")
+        backtest_500b_two_bearish_command(
+            from_date=_parse_date(args.from_date),
+            to_date=_parse_date(args.to_date),
+            lookahead_days=args.lookahead_days,
+            volume_ratio=args.volume_ratio,
+            holding_days=_parse_int_list(args.holding_days),
+            min_d0_trade_amount=args.min_d0_trade_amount,
+            dedupe_window_days=args.dedupe_window_days,
+            export_csv=args.export_csv,
+            sweep_volume_ratio=(
+                _parse_float_list(args.sweep_volume_ratio)
+                if args.sweep_volume_ratio
+                else None
+            ),
         )
         return
 
