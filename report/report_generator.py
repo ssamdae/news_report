@@ -7,6 +7,7 @@ from typing import Any
 
 from database.db import get_connection
 from database.pattern_repository import get_stock_pattern_stats
+from report.subtheme_ranking_engine import build_subtheme_rankings
 from report.theme_ranking_engine import build_theme_rankings
 
 
@@ -546,6 +547,42 @@ def _theme_ranking_text(theme_rankings: list[dict[str, Any]]) -> str:
             f"평균 투자점수 {row.get('average_investment_score', 0):.1f}, "
             f"B등급 이상 {row.get('ab_grade_count', 0)}개, "
             f"거래대금 비중 {row.get('trading_share', 0):.1f}%"
+        )
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def _subtheme_ranking_text(subtheme_rankings: list[dict[str, Any]]) -> str:
+    if not subtheme_rankings:
+        return "주도 서브테마를 산출할 키워드 데이터가 부족합니다."
+
+    lines: list[str] = []
+    for index, row in enumerate(subtheme_rankings[:5], start=1):
+        lines.append(f"{index}. {row['subtheme']} ({row['score']}점)")
+        lines.append(
+            "대장주: "
+            + _theme_stock_label(
+                row.get("leader"),
+                row.get("leader_grade"),
+                row.get("leader_score"),
+            )
+        )
+        stock_details = row.get("stock_details") or []
+        related = [
+            _theme_stock_label(
+                item.get("stock_name"),
+                item.get("investment_grade"),
+                item.get("investment_score"),
+            )
+            for item in stock_details[1:5]
+        ]
+        if not related:
+            related = [str(name) for name in (row.get("stocks") or [])[1:5]]
+        lines.append("관련 종목: " + (", ".join(related) if related else "-"))
+        lines.append(
+            "구성: "
+            f"종목 {row.get('stock_count', 0)}개, "
+            f"PDF 출현 {row.get('pdf_count', 0)}회"
         )
         lines.append("")
     return "\n".join(lines).strip()
@@ -1164,6 +1201,7 @@ def generate_daily_report(report_date: date) -> Path:
     signals = _load_signal_events(report_date)
     analyses = _load_stock_analyses(report_date)
     theme_rankings = build_theme_rankings(report_date)
+    subtheme_rankings = build_subtheme_rankings(report_date)
     analyses_by_stock = {row["stock_name"]: row for row in analyses}
     signal_analyses = [
         analyses_by_stock[row["stock_name"]]
@@ -1211,6 +1249,12 @@ def generate_daily_report(report_date: date) -> Path:
         story,
         "주도 테마 랭킹",
         _theme_ranking_text(theme_rankings),
+        styles,
+    )
+    _add_report_section(
+        story,
+        "주도 서브테마",
+        _subtheme_ranking_text(subtheme_rankings),
         styles,
     )
     _add_report_section(

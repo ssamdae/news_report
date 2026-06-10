@@ -777,6 +777,49 @@ def test_theme_ranking_command(report_date: date) -> None:
         )
 
 
+def test_subtheme_ranking_command(report_date: date) -> None:
+    from report.subtheme_ranking_engine import build_subtheme_rankings
+
+    rankings = build_subtheme_rankings(report_date)
+    print(f"서브테마 순위 기준일: {report_date.isoformat()}")
+    if not rankings:
+        print("서브테마 랭킹 데이터가 없습니다.")
+        return
+
+    print("서브테마 순위")
+    print("-" * 72)
+    for index, row in enumerate(rankings, start=1):
+        leader_score = row.get("leader_score")
+        leader_score_text = "-" if leader_score is None else f"{leader_score:.0f}"
+        leader_grade = row.get("leader_grade") or "-"
+        related_stocks = [
+            stock
+            for stock in (row.get("stocks") or [])
+            if stock != row.get("leader")
+        ]
+        breakdown = row.get("score_breakdown") or {}
+        print(f"{index}위 {row['subtheme']}")
+        print(f"{row['score']}점")
+        print()
+        print("대장주")
+        print(f"{row.get('leader') or '-'} {leader_grade}{leader_score_text}")
+        print()
+        print("관련 종목")
+        if related_stocks:
+            for stock_name in related_stocks[:5]:
+                print(stock_name)
+        else:
+            print("-")
+        print(
+            "산식: "
+            f"종목수 {breakdown.get('stock_count', 0)} + "
+            f"평균점수 {breakdown.get('average_investment', 0)} + "
+            f"대장주 {breakdown.get('leader_score', 0)} + "
+            f"PDF빈도 {breakdown.get('pdf_frequency', 0)}"
+        )
+        print("-" * 72)
+
+
 def backfill_investment_grade_command(report_date: date) -> None:
     from database.news_repository import backfill_investment_grades
 
@@ -1322,6 +1365,12 @@ def main() -> None:
         if not args.date:
             parser.error("test-theme-ranking requires --date")
         test_theme_ranking_command(_parse_date(args.date))
+        return
+
+    if args.command == "test-subtheme-ranking":
+        if not args.date:
+            parser.error("test-subtheme-ranking requires --date")
+        test_subtheme_ranking_command(_parse_date(args.date))
         return
 
     if args.command == "backfill-investment-grade":

@@ -1,0 +1,336 @@
+from __future__ import annotations
+
+import re
+from collections import defaultdict
+from datetime import date
+from typing import Any
+
+from database.db import get_connection
+
+
+STOP_TERMS = {
+    "주식",
+    "증시",
+    "코스피",
+    "코스닥",
+    "상승",
+    "하락",
+    "급등",
+    "급락",
+    "개별주",
+    "테마주",
+    "관련주",
+    "수혜주",
+    "대장주",
+}
+
+EXTRA_STOP_TERMS = {
+    "관련주",
+    "수혜주",
+    "테마주",
+    "급등",
+    "상승",
+    "종목",
+    "기업",
+    "실적",
+    "매출",
+    "주식",
+    "증시",
+    "시장",
+    "뉴스",
+    "공시",
+    "대장주",
+}
+
+
+def _rows_to_dicts(cursor: Any) -> list[dict[str, Any]]:
+    columns = [description[0] for description in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_keyword(value: Any) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"\s+", " ", text)
+    text = text.strip(" -_/·,()[]{}")
+    return text
+
+
+def _is_noise_keyword(keyword: str, stock_names: set[str]) -> bool:
+    normalized = _normalize_keyword(keyword)
+    if not normalized:
+        return True
+    if normalized in STOP_TERMS | EXTRA_STOP_TERMS:
+        return True
+    if normalized in stock_names:
+        return True
+    if len(normalized) < 2 and not normalized.isupper():
+        return True
+    if normalized.isdigit():
+        return True
+    return False
+
+
+def _split_profile_terms(value: Any) -> list[str]:
+    text = str(value or "")
+    if not text.strip():
+        return []
+    return [
+        _normalize_keyword(term)
+        for term in re.split(r"\s*,\s*|/|·|\+|&", text)
+        if _normalize_keyword(term)
+    ]
+
+
+def _stock_sort_key(row: dict[str, Any]) -> tuple[float, float]:
+    investment_score = _safe_float(row.get("investment_score"))
+    confidence_score = _safe_float(row.get("confidence_score")) or 0
+    return (
+        investment_score if investment_score is not None else -1,
+        confidence_score,
+    )
+
+
+def _load_signal_stock_rows(report_date: date) -> list[dict[str, Any]]:
+    sql = """
+        WITH latest_analysis AS (
+            SELECT DISTINCT ON (stock_name)
+                stock_name,
+                investment_score,
+                investment_grade,
+                confidence_score,
+                analysis_date,
+                id
+            FROM stock_analysis
+            WHERE analysis_date::date = %(report_date)s
+            ORDER BY stock_name, analysis_date DESC, id DESC
+        )
+        SELECT
+            se.stock_code,
+            sm.stock_name,
+            COALESCE(sp.primary_theme, '') AS primary_theme,
+            COALESCE(sp.secondary_theme, '') AS secondary_theme,
+            COALESCE(sp.related_themes, '') AS related_themes,
+            se.trading_value,
+            la.investment_score,
+            la.investment_grade,
+            la.confidence_score,
+            sps.source_pdf_count
+        FROM signal_event se
+        JOIN stock_master sm
+            ON sm.stock_code = se.stock_code
+        LEFT JOIN stock_profile sp
+            ON sp.stock_name = sm.stock_name
+        LEFT JOIN latest_analysis la
+            ON la.stock_name = sm.stock_name
+        LEFT JOIN stock_pattern_stats sps
+            ON sps.stock_name = sm.stock_name
+        WHERE se.signal_date = %(report_date)s
+        ORDER BY se.trading_value DESC NULLS LAST, sm.stock_name
+    """
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, {"report_date": report_date})
+            return _rows_to_dicts(cursor)
+
+
+def _load_knowledge_keywords(stock_names: list[str]) -> list[dict[str, Any]]:
+    if not stock_names:
+        return []
+    sql = """
+        SELECT
+            stock_name,
+            node_value,
+            score
+        FROM stock_knowledge_graph
+        WHERE node_type = 'KEYWORD'
+            AND stock_name = ANY(%(stock_names)s)
+        ORDER BY stock_name, score DESC NULLS LAST, node_value
+    """
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, {"stock_names": stock_names})
+            return _rows_to_dicts(cursor)
+
+
+def _load_pdf_theme_keywords(stock_names: list[str]) -> list[dict[str, Any]]:
+    if not stock_names:
+        return []
+    sql = """
+        SELECT
+            stock_name,
+            theme_name,
+            COUNT(*)::integer AS pdf_count
+        FROM pdf_signal_item
+        WHERE stock_name = ANY(%(stock_names)s)
+        GROUP BY stock_name, theme_name
+        ORDER BY stock_name, pdf_count DESC, theme_name
+    """
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, {"stock_names": stock_names})
+            return _rows_to_dicts(cursor)
+
+
+def _add_candidate(
+    grouped: dict[str, dict[str, Any]],
+    keyword: str,
+    stock: dict[str, Any],
+    source: str,
+    weight: float,
+    pdf_count: int = 0,
+    stock_names: set[str] | None = None,
+) -> None:
+    stock_names = stock_names or set()
+    subtheme = _normalize_keyword(keyword)
+    if _is_noise_keyword(subtheme, stock_names):
+        return
+
+    entry = grouped.setdefault(
+        subtheme,
+        {
+            "subtheme": subtheme,
+            "stocks_by_name": {},
+            "pdf_count": 0,
+            "source_weight": 0.0,
+            "sources": set(),
+        },
+    )
+    stock_name = stock["stock_name"]
+    existing = entry["stocks_by_name"].get(stock_name)
+    if existing is None or _stock_sort_key(stock) > _stock_sort_key(existing):
+        entry["stocks_by_name"][stock_name] = stock
+    entry["pdf_count"] += int(pdf_count or 0)
+    entry["source_weight"] += weight
+    entry["sources"].add(source)
+
+
+def build_subtheme_rankings(report_date: date) -> list[dict[str, Any]]:
+    signal_rows = _load_signal_stock_rows(report_date)
+    if not signal_rows:
+        return []
+
+    stock_by_name = {row["stock_name"]: row for row in signal_rows}
+    stock_names = set(stock_by_name)
+    grouped: dict[str, dict[str, Any]] = {}
+
+    for row in _load_knowledge_keywords(list(stock_names)):
+        stock = stock_by_name.get(row["stock_name"])
+        if not stock:
+            continue
+        _add_candidate(
+            grouped,
+            row.get("node_value"),
+            stock,
+            source="stock_knowledge_graph",
+            weight=_safe_float(row.get("score")) or 0,
+            stock_names=stock_names,
+        )
+
+    for stock in signal_rows:
+        profile_terms = []
+        profile_terms.extend(_split_profile_terms(stock.get("secondary_theme")))
+        profile_terms.extend(_split_profile_terms(stock.get("related_themes")))
+        if not profile_terms:
+            profile_terms.extend(_split_profile_terms(stock.get("primary_theme")))
+        for term in profile_terms:
+            _add_candidate(
+                grouped,
+                term,
+                stock,
+                source="stock_profile",
+                weight=30,
+                stock_names=stock_names,
+            )
+
+    for row in _load_pdf_theme_keywords(list(stock_names)):
+        stock = stock_by_name.get(row["stock_name"])
+        if not stock:
+            continue
+        for term in _split_profile_terms(row.get("theme_name")):
+            _add_candidate(
+                grouped,
+                term,
+                stock,
+                source="pdf_signal_item",
+                weight=10,
+                pdf_count=int(row.get("pdf_count") or 0),
+                stock_names=stock_names,
+            )
+
+    rankings: list[dict[str, Any]] = []
+    for subtheme, entry in grouped.items():
+        stocks = list(entry["stocks_by_name"].values())
+        if not stocks:
+            continue
+        ranked_stocks = sorted(stocks, key=_stock_sort_key, reverse=True)
+        scores = [
+            score
+            for score in (_safe_float(row.get("investment_score")) for row in stocks)
+            if score is not None
+        ]
+        average_score = sum(scores) / len(scores) if scores else 0
+        leader = ranked_stocks[0]
+        leader_score = _safe_float(leader.get("investment_score")) or 0
+        pdf_count = int(entry["pdf_count"] or 0)
+
+        stock_count_score = min(30, len(stocks) * 10)
+        average_score_part = min(40, average_score * 0.4)
+        leader_score_part = min(20, leader_score * 0.2)
+        pdf_score_part = min(10, pdf_count)
+        total_score = round(
+            min(
+                100,
+                stock_count_score
+                + average_score_part
+                + leader_score_part
+                + pdf_score_part,
+            )
+        )
+
+        rankings.append(
+            {
+                "subtheme": subtheme,
+                "score": int(total_score),
+                "stock_count": len(stocks),
+                "leader": leader.get("stock_name"),
+                "leader_score": _safe_float(leader.get("investment_score")),
+                "leader_grade": leader.get("investment_grade"),
+                "stocks": [row.get("stock_name") for row in ranked_stocks],
+                "stock_details": [
+                    {
+                        "stock_name": row.get("stock_name"),
+                        "investment_score": _safe_float(row.get("investment_score")),
+                        "investment_grade": row.get("investment_grade"),
+                    }
+                    for row in ranked_stocks
+                ],
+                "pdf_count": pdf_count,
+                "sources": sorted(entry["sources"]),
+                "score_breakdown": {
+                    "stock_count": round(stock_count_score, 2),
+                    "average_investment": round(average_score_part, 2),
+                    "leader_score": round(leader_score_part, 2),
+                    "pdf_frequency": round(pdf_score_part, 2),
+                },
+            }
+        )
+
+    return sorted(
+        rankings,
+        key=lambda row: (
+            row["score"],
+            row["stock_count"],
+            row["leader_score"] or 0,
+            row["pdf_count"],
+        ),
+        reverse=True,
+    )
