@@ -66,6 +66,15 @@ def _format_score(value: Any) -> str:
         return str(value)
 
 
+def _format_trading_value_eok(value: Any) -> str:
+    if value is None:
+        return "-"
+    try:
+        return f"{float(value) / 100_000_000:,.0f}억"
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def _safe_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -108,6 +117,59 @@ def _knowledge_points_text(value: Any) -> str:
     return _truncate_with_ellipsis(compact, 260)
 
 
+def _knowledge_map_text(
+    stock_name: str,
+    signal: dict[str, Any],
+    analysis: dict[str, Any],
+    pattern_stats: dict[str, Any],
+) -> str:
+    from database.news_repository import get_stock_knowledge_context
+
+    context = get_stock_knowledge_context(stock_name)
+    primary_theme = (
+        context.get("primary_theme")
+        or signal.get("primary_theme")
+        or "-"
+    )
+    keywords = context.get("keywords") or []
+    keyword_text = ", ".join(str(keyword) for keyword in keywords[:5]) or "-"
+    pdf_count = int(
+        pattern_stats.get("source_pdf_count")
+        or context.get("pdf_appear_count")
+        or 0
+    )
+    interpretation = _knowledge_points_text(analysis.get("knowledge_points"))
+    if interpretation == "-":
+        interpretation = "지식맵 데이터가 부족해 반복 테마 판단은 제한됩니다."
+
+    return "\n".join(
+        [
+            f"대표테마: {primary_theme}",
+            f"과거 PDF 출현: {pdf_count}회",
+            f"관련 키워드: {keyword_text}",
+            f"해석: {_truncate_with_ellipsis(interpretation, 180)}",
+        ]
+    )
+
+
+def _pattern_stats_from_analysis(analysis: dict[str, Any] | None) -> dict[str, Any]:
+    if not analysis:
+        return {}
+    return {
+        "signal_count": analysis.get("pattern_signal_count"),
+        "source_signal_count": analysis.get("source_signal_count"),
+        "source_pdf_count": analysis.get("source_pdf_count"),
+        "next_day_win_rate": analysis.get("next_day_win_rate"),
+        "next_day_avg_return": analysis.get("next_day_avg_return"),
+        "day3_win_rate": analysis.get("day3_win_rate"),
+        "day3_avg_return": analysis.get("day3_avg_return"),
+        "day5_win_rate": analysis.get("day5_win_rate"),
+        "day5_avg_return": analysis.get("day5_avg_return"),
+        "max_return_5d": analysis.get("max_return_5d"),
+        "min_return_5d": analysis.get("min_return_5d"),
+    }
+
+
 def _format_pattern_pct(value: Any, show_sign: bool = False) -> str:
     if value is None:
         return "-"
@@ -141,7 +203,8 @@ def _pattern_stats_text(stats: dict[str, Any], interpretation: Any) -> str:
     source_pdf_count = int(stats.get("source_pdf_count") or 0)
     lines = [
         f"발생횟수: {signal_count}회",
-        f"- 시스템 신호: {source_signal_count}회 / PDF 과거 사례: {source_pdf_count}회",
+        f"* 실시간 조건식: {source_signal_count}회",
+        f"* PDF 과거 강세: {source_pdf_count}회",
         (
             "D+1 승률/평균: "
             f"{_format_pattern_pct(stats.get('next_day_win_rate'))} / "
@@ -360,6 +423,21 @@ def _market_strength_text(daily_theme: dict[str, Any]) -> str:
     return f"{stars}\n{strong_themes}"
 
 
+def _leading_theme_text(daily_theme: dict[str, Any]) -> str:
+    theme_rankings = _text(daily_theme.get("theme_rankings"))
+    if theme_rankings != "-":
+        return theme_rankings
+    return _text(daily_theme.get("strong_themes"))
+
+
+def _investment_notice_text() -> str:
+    return (
+        "본 리포트는 뉴스, 지식맵, 과거 패턴통계를 종합한 참고 자료입니다. "
+        "투자 판단 전 공시, 실적, 수급, 시장 변동성을 함께 확인해야 하며 "
+        "매수·매도 추천을 의미하지 않습니다."
+    )
+
+
 def _investment_detail(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -381,9 +459,9 @@ def _investment_section_text(analysis: dict[str, Any]) -> str:
     score_text = "-" if score is None else f"{score:.0f}점"
 
     lines = [
-        f"{grade} / {score_text}",
+        f"[{grade}] {score_text}",
+        "점수 구성",
         (
-            "점수 구성: "
             f"패턴 {breakdown.get('pattern', 0)}점 · "
             f"지식맵 {breakdown.get('knowledge', 0)}점 · "
             f"뉴스 {breakdown.get('news', 0)}점"
@@ -404,7 +482,7 @@ def _top_pick_text(
     for analysis in analyses:
         investment_score = _safe_float(analysis.get("investment_score"))
         confidence_score = _safe_float(analysis.get("confidence_score")) or 0
-        pattern_stats = get_stock_pattern_stats(_text(analysis.get("stock_name")))
+        pattern_stats = _pattern_stats_from_analysis(analysis)
         day5_avg_return = _safe_float(pattern_stats.get("day5_avg_return"))
         signal_count = int(pattern_stats.get("signal_count") or 0)
         if investment_score is None:
@@ -421,22 +499,24 @@ def _top_pick_text(
 
     if ranked_rows:
         lines = []
-        for investment_score, _confidence, _day5, _signals, analysis in sorted(
+        for index, (investment_score, _confidence, _day5, _signals, analysis) in enumerate(sorted(
             ranked_rows,
             key=lambda row: row[:4],
             reverse=True,
-        )[:3]:
+        )[:3], start=1):
             detail = _investment_detail(analysis.get("investment_grade_detail"))
             reasons = detail.get("grade_reasons") or []
             grade = _text(analysis.get("investment_grade"))
             stock_name = _text(analysis.get("stock_name"))
-            lines.append(f"[{grade}] {stock_name}")
-            lines.append(f"{investment_score:.0f}점")
+            lines.append(f"{index}. [{grade}] {stock_name} / {investment_score:.0f}점")
             if reasons:
                 lines.append("주요 이유:")
                 lines.extend(f"- {reason}" for reason in reasons[:3])
             lines.append("")
         return "\n".join(lines).strip()
+
+    if analyses:
+        return "투자등급 데이터가 없습니다. analyze-signal-stocks 또는 backfill-investment-grade 실행이 필요합니다."
 
     value = _text(daily_theme.get("top_picks"))
     if value == "-":
@@ -512,8 +592,21 @@ def _load_stock_analyses(report_date: date) -> list[dict[str, Any]]:
             a.investment_grade,
             a.investment_grade_detail,
             a.sentiment,
-            a.confidence_score
+            a.confidence_score,
+            sps.signal_count AS pattern_signal_count,
+            sps.source_signal_count,
+            sps.source_pdf_count,
+            sps.next_day_win_rate,
+            sps.next_day_avg_return,
+            sps.day3_win_rate,
+            sps.day3_avg_return,
+            sps.day5_win_rate,
+            sps.day5_avg_return,
+            sps.max_return_5d,
+            sps.min_return_5d
         FROM stock_analysis a
+        LEFT JOIN stock_pattern_stats sps
+            ON sps.stock_name = a.stock_name
         WHERE a.analysis_date::date = %(report_date)s
         ORDER BY a.stock_name, a.analysis_date DESC, a.id DESC
     """
@@ -600,29 +693,58 @@ def get_stock_news_for_report(
     return _fetch_all(fallback_sql, {"stock_name": stock_name, "limit": limit})
 
 
-def _build_signal_table(rows: list[dict[str, Any]], styles: dict[str, Any]) -> Any:
+def _build_signal_table(
+    rows: list[dict[str, Any]],
+    analyses_by_stock: dict[str, dict[str, Any]],
+    styles: dict[str, Any],
+) -> Any:
     from reportlab.lib import colors
     from reportlab.platypus import Table, TableStyle
 
     table_rows = [
         [
             _paragraph("순위", styles["table_header"]),
+            _paragraph("등급", styles["table_header"]),
             _paragraph("종목명", styles["table_header"]),
+            _paragraph("투자점수", styles["table_header"]),
             _paragraph("거래대금", styles["table_header"]),
             _paragraph("대표테마", styles["table_header"]),
+            _paragraph("D+5 평균", styles["table_header"]),
         ]
     ]
     for rank, row in enumerate(rows, start=1):
+        analysis = analyses_by_stock.get(_text(row.get("stock_name")), {})
+        investment_score = _safe_float(analysis.get("investment_score"))
+        pattern_stats = _pattern_stats_from_analysis(analysis)
         table_rows.append(
             [
                 _paragraph(rank, styles["small"]),
+                _paragraph(analysis.get("investment_grade"), styles["small"]),
                 _paragraph(row.get("stock_name"), styles["small"]),
-                _paragraph(_format_number(row.get("trading_value")), styles["small"]),
+                _paragraph(
+                    "-" if investment_score is None else f"{investment_score:.0f}",
+                    styles["small"],
+                ),
+                _paragraph(
+                    _format_trading_value_eok(row.get("trading_value")),
+                    styles["small"],
+                ),
                 _paragraph(row.get("primary_theme"), styles["small"]),
+                _paragraph(
+                    _format_pattern_pct(
+                        pattern_stats.get("day5_avg_return"),
+                        show_sign=True,
+                    ),
+                    styles["small"],
+                ),
             ]
         )
 
-    table = Table(table_rows, colWidths=[30, 115, 95, 230], repeatRows=1)
+    table = Table(
+        table_rows,
+        colWidths=[24, 30, 72, 44, 62, 190, 48],
+        repeatRows=1,
+    )
     table.setStyle(
         TableStyle(
             [
@@ -758,11 +880,11 @@ def generate_daily_report(report_date: date) -> Path:
         leftMargin=36,
         topMargin=36,
         bottomMargin=36,
-        title=f"주도주 AI 분석 리포트 {report_date.isoformat()}",
+        title=f"주도주 AI 투자 리포트 {report_date.isoformat()}",
     )
     story: list[Any] = []
 
-    story.append(Paragraph("주도주 AI 분석 리포트", styles["title"]))
+    story.append(Paragraph("주도주 AI 투자 리포트", styles["title"]))
     story.append(_paragraph(f"날짜: {report_date.isoformat()}", styles["body"]))
     story.append(_paragraph(f"생성시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles["body"]))
     story.append(Spacer(1, 24))
@@ -770,7 +892,9 @@ def generate_daily_report(report_date: date) -> Path:
     story.append(Paragraph("시장 요약", styles["heading"]))
     _add_report_section(story, "시장 요약", daily_theme.get("market_summary"), styles)
     _add_report_section(story, "시장 강도", _market_strength_text(daily_theme), styles)
+    _add_report_section(story, "오늘의 주도 테마", _leading_theme_text(daily_theme), styles)
     _add_report_section(story, "TOP PICK", _top_pick_text(daily_theme, signal_analyses), styles)
+    _add_report_section(story, "투자 유의사항", _investment_notice_text(), styles)
     story.append(PageBreak())
 
     if signals:
@@ -778,7 +902,7 @@ def generate_daily_report(report_date: date) -> Path:
             KeepTogether(
                 [
                     Paragraph("500억봉 종목 요약", styles["heading"]),
-                    _build_signal_table(signals, styles),
+                    _build_signal_table(signals, analyses_by_stock, styles),
                 ]
             )
         )
@@ -793,7 +917,9 @@ def generate_daily_report(report_date: date) -> Path:
             _add_separator(story)
             stock_name = _text(signal.get("stock_name"))
             analysis = analyses_by_stock.get(stock_name)
-            pattern_stats = get_stock_pattern_stats(stock_name)
+            pattern_stats = _pattern_stats_from_analysis(analysis)
+            if int(pattern_stats.get("signal_count") or 0) <= 0:
+                pattern_stats = get_stock_pattern_stats(stock_name)
             title = f"{stock_name} / 대표테마: {_text(signal.get('primary_theme'))}"
             story.append(Paragraph(title, styles["stock_heading"]))
 
@@ -813,7 +939,12 @@ def generate_daily_report(report_date: date) -> Path:
                     if column == "investment_grade":
                         value = _investment_section_text(analysis)
                     if column == "knowledge_points":
-                        value = _knowledge_points_text(value)
+                        value = _knowledge_map_text(
+                            stock_name,
+                            signal,
+                            analysis,
+                            pattern_stats,
+                        )
                     if column == "pattern_points":
                         value = _pattern_stats_text(pattern_stats, value)
                     _add_report_section(story, label, value, styles)
