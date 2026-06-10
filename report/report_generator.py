@@ -686,8 +686,10 @@ def _top_pick_text(
 ) -> str:
     analyses = analyses or []
     theme_priority: dict[str, int] = {}
+    theme_role_by_stock: dict[str, str] = {}
     for priority, theme_row in enumerate((theme_rankings or [])[:2], start=1):
         weight = 3 - priority
+        theme_name = _text(theme_row.get("theme"))
         stock_names = list(theme_row.get("stocks") or [])
         if not stock_names:
             stock_names = [theme_row.get("leader")]
@@ -698,6 +700,14 @@ def _top_pick_text(
                     theme_priority.get(str(stock_name), 0),
                     weight,
                 )
+        leader = theme_row.get("leader")
+        if leader:
+            theme_role_by_stock[str(leader)] = f"{theme_name} {priority}위 테마 대장주"
+        for follower in theme_row.get("followers") or []:
+            if follower:
+                theme_role_by_stock[str(follower)] = (
+                    f"{theme_name} {priority}위 테마 후속주"
+                )
 
     ranked_rows = []
     for analysis in analyses:
@@ -705,9 +715,16 @@ def _top_pick_text(
         confidence_score = _safe_float(analysis.get("confidence_score")) or 0
         pattern_stats = _pattern_stats_from_analysis(analysis)
         day5_avg_return = _safe_float(pattern_stats.get("day5_avg_return"))
+        day5_win_rate = _safe_float(pattern_stats.get("day5_win_rate"))
         signal_count = int(pattern_stats.get("signal_count") or 0)
         stock_name = _text(analysis.get("stock_name"))
+        grade = _text(analysis.get("investment_grade"))
+        detail = _investment_detail(analysis.get("investment_grade_detail"))
+        breakdown = detail.get("score_breakdown") or {}
+        news_score = int(breakdown.get("news") or 0)
         if investment_score is None:
+            continue
+        if grade == "D":
             continue
         ranked_rows.append(
             (
@@ -716,29 +733,83 @@ def _top_pick_text(
                 confidence_score,
                 day5_avg_return if day5_avg_return is not None else -9999,
                 signal_count,
+                day5_avg_return,
+                day5_win_rate,
+                news_score,
                 analysis,
             )
         )
 
     if ranked_rows:
-        lines = []
-        for index, (_theme_priority, investment_score, _confidence, _day5, _signals, analysis) in enumerate(sorted(
+        def passes_filter(row: tuple[Any, ...], stage: int) -> bool:
+            day5_avg_return = row[5]
+            day5_win_rate = row[6]
+            news_score = row[7]
+            if stage <= 0 and news_score == 0:
+                return False
+            if stage <= 1 and day5_win_rate is not None and day5_win_rate < 45:
+                return False
+            if stage <= 2 and day5_avg_return is not None and day5_avg_return < 0:
+                return False
+            return True
+
+        sorted_rows = sorted(
             ranked_rows,
             key=lambda row: row[:5],
             reverse=True,
-        )[:3], start=1):
+        )
+        selected_rows: list[tuple[Any, ...]] = []
+        selected_stocks: set[str] = set()
+        for stage in range(4):
+            for row in sorted_rows:
+                analysis = row[-1]
+                stock_name = _text(analysis.get("stock_name"))
+                if stock_name in selected_stocks:
+                    continue
+                if not passes_filter(row, stage):
+                    continue
+                selected_rows.append(row)
+                selected_stocks.add(stock_name)
+                if len(selected_rows) >= 3:
+                    break
+            if len(selected_rows) >= 3:
+                break
+
+        lines = []
+        for index, row in enumerate(selected_rows[:3], start=1):
+            (
+                _theme_priority,
+                investment_score,
+                _confidence,
+                _day5,
+                _signals,
+                day5_avg_return,
+                day5_win_rate,
+                _news_score,
+                analysis,
+            ) = row
             detail = _investment_detail(analysis.get("investment_grade_detail"))
             reasons = detail.get("grade_reasons") or []
             breakdown = detail.get("score_breakdown") or {}
             grade = _text(analysis.get("investment_grade"))
             stock_name = _text(analysis.get("stock_name"))
             lines.append(f"{index}. [{grade}] {stock_name} / {investment_score:.0f}점")
-            display_reasons = list(reasons[:3])
+            display_reasons = []
+            if stock_name in theme_role_by_stock:
+                display_reasons.append(theme_role_by_stock[stock_name])
+            if day5_avg_return is not None:
+                display_reasons.append(
+                    f"D+5 평균 수익률 {day5_avg_return:+.2f}%"
+                )
+            if day5_win_rate is not None:
+                display_reasons.append(f"D+5 상승확률 {day5_win_rate:.1f}%")
+            display_reasons.extend(list(reasons[:3]))
             if grade == "C" or int(breakdown.get("news") or 0) <= 10:
                 display_reasons.append("뉴스 모멘텀 제한으로 등급 상단이 제한")
             if display_reasons:
+                deduped_reasons = list(dict.fromkeys(display_reasons))
                 lines.append("주요 이유:")
-                lines.extend(f"- {reason}" for reason in display_reasons[:4])
+                lines.extend(f"- {reason}" for reason in deduped_reasons[:4])
             lines.append("")
         return "\n".join(lines).strip()
 
