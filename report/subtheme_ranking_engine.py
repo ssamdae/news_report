@@ -98,6 +98,40 @@ GENERIC_SUBTHEME_STOPWORDS = {
     "뉴스",
 }
 
+ALLOWED_SUBTHEME_PRIMARY_THEME = {
+    "로봇": {"AI/로봇"},
+    "휴머노이드": {"AI/로봇"},
+    "산업용로봇": {"AI/로봇"},
+    "스마트팩토리": {"AI/로봇", "반도체"},
+    "HBM": {"반도체"},
+    "AI반도체": {"반도체", "AI/로봇"},
+    "SOCAMM": {"반도체", "AI/로봇"},
+    "CXL": {"반도체", "AI/로봇"},
+    "온디바이스AI": {"반도체", "AI/로봇"},
+    "데이터센터": {"반도체", "AI/로봇", "전력"},
+    "반도체장비": {"반도체"},
+    "후공정": {"반도체"},
+    "전공정": {"반도체"},
+    "유리기판": {"반도체"},
+    "전력반도체": {"반도체", "전력"},
+    "ADC": {"바이오"},
+    "기술수출": {"바이오"},
+    "비만치료제": {"바이오"},
+    "제약바이오": {"바이오"},
+    "원전": {"원전", "전력", "개별주"},
+    "전선": {"전력"},
+    "전력기기": {"전력"},
+    "전력망": {"전력"},
+    "ESS": {"이차전지", "전력"},
+    "이차전지": {"이차전지"},
+    "전고체": {"이차전지"},
+    "전해액": {"이차전지"},
+    "리튬": {"이차전지"},
+    "방산": {"방산", "우주항공", "개별주"},
+    "우주항공": {"우주항공", "방산", "개별주"},
+    "조선": {"조선"},
+}
+
 EXTRA_STOP_TERMS = {
     "관련주",
     "수혜주",
@@ -136,6 +170,18 @@ def _normalize_keyword(value: Any) -> str:
     text = re.sub(r"\s+", " ", text)
     text = text.strip(" -_/·,()[]{}")
     return KEYWORD_ALIASES.get(text, text)
+
+
+def _normalize_primary_theme(value: Any) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"\s+", "", text)
+    if text in {"AI로봇", "로봇", "AI/로봇"}:
+        return "AI/로봇"
+    if text in {"2차전지", "2차전지소재"}:
+        return "이차전지"
+    if text in {"제약바이오"}:
+        return "바이오"
+    return text
 
 
 def _priority_keywords() -> set[str]:
@@ -182,6 +228,21 @@ def _is_noise_keyword(keyword: str, stock_names: set[str]) -> bool:
 
 def _is_ascii_only(value: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z0-9]+", value))
+
+
+def _is_subtheme_primary_theme_allowed(subtheme: str, stock: dict[str, Any]) -> bool:
+    normalized_subtheme = _normalize_keyword(subtheme)
+    allowed_themes = ALLOWED_SUBTHEME_PRIMARY_THEME.get(normalized_subtheme)
+    if not allowed_themes:
+        return True
+    primary_theme = _normalize_primary_theme(stock.get("primary_theme"))
+    if not primary_theme:
+        return False
+    normalized_allowed = {
+        _normalize_primary_theme(theme)
+        for theme in allowed_themes
+    }
+    return primary_theme in normalized_allowed
 
 
 def _split_profile_terms(value: Any) -> list[str]:
@@ -335,6 +396,8 @@ def _add_candidate(
     stock_names = stock_names or set()
     subtheme = _normalize_keyword(keyword)
     if _is_noise_keyword(subtheme, stock_names):
+        return
+    if not _is_subtheme_primary_theme_allowed(subtheme, stock):
         return
 
     entry = grouped.setdefault(
