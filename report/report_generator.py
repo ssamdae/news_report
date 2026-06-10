@@ -553,11 +553,14 @@ def _theme_ranking_text(theme_rankings: list[dict[str, Any]]) -> str:
 
 
 def _subtheme_ranking_text(subtheme_rankings: list[dict[str, Any]]) -> str:
-    if not subtheme_rankings:
+    display_rankings = [
+        row for row in subtheme_rankings if int(row.get("score") or 0) >= 40
+    ][:5]
+    if not display_rankings:
         return "주도 서브테마를 산출할 키워드 데이터가 부족합니다."
 
     lines: list[str] = []
-    for index, row in enumerate(subtheme_rankings[:5], start=1):
+    for index, row in enumerate(display_rankings, start=1):
         lines.append(f"{index}. {row['subtheme']} ({row['score']}점)")
         lines.append(
             "대장주: "

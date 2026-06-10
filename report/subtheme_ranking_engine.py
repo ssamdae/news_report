@@ -24,6 +24,80 @@ STOP_TERMS = {
     "대장주",
 }
 
+PRIORITY_SUBTHEME_KEYWORDS = {
+    "HBM",
+    "AI반도체",
+    "반도체장비",
+    "반도체 장비",
+    "후공정",
+    "전공정",
+    "유리기판",
+    "전력반도체",
+    "SOCAMM",
+    "CXL",
+    "온디바이스AI",
+    "데이터센터",
+    "휴머노이드",
+    "산업용로봇",
+    "스마트팩토리",
+    "로봇",
+    "ADC",
+    "기술수출",
+    "비만치료제",
+    "제약바이오",
+    "원전",
+    "방산",
+    "우주항공",
+    "조선",
+    "이차전지",
+    "ESS",
+    "전고체",
+    "전해액",
+    "리튬",
+    "전선",
+    "전력기기",
+    "전력망",
+}
+
+KEYWORD_ALIASES = {
+    "반도체 장비": "반도체장비",
+    "AI 반도체": "AI반도체",
+    "에이아이반도체": "AI반도체",
+    "온디바이스 AI": "온디바이스AI",
+    "제약 바이오": "제약바이오",
+    "2차전지": "이차전지",
+    "2차 전지": "이차전지",
+    "우주 항공": "우주항공",
+}
+
+GENERIC_SUBTHEME_STOPWORDS = {
+    "반도체",
+    "바이오",
+    "AI",
+    "삼성",
+    "LG",
+    "SK",
+    "현대",
+    "개별주",
+    "BIO",
+    "디플",
+    "반디플",
+    "관련주",
+    "수혜주",
+    "테마주",
+    "급등",
+    "상승",
+    "종목",
+    "기업",
+    "실적",
+    "매출",
+    "주가",
+    "증시",
+    "시장",
+    "공시",
+    "뉴스",
+}
+
 EXTRA_STOP_TERMS = {
     "관련주",
     "수혜주",
@@ -61,14 +135,22 @@ def _normalize_keyword(value: Any) -> str:
     text = str(value or "").strip()
     text = re.sub(r"\s+", " ", text)
     text = text.strip(" -_/·,()[]{}")
-    return text
+    return KEYWORD_ALIASES.get(text, text)
+
+
+def _priority_keywords() -> set[str]:
+    return {_normalize_keyword(keyword) for keyword in PRIORITY_SUBTHEME_KEYWORDS}
+
+
+def _is_priority_keyword(keyword: str) -> bool:
+    return _normalize_keyword(keyword) in _priority_keywords()
 
 
 def _is_noise_keyword(keyword: str, stock_names: set[str]) -> bool:
     normalized = _normalize_keyword(keyword)
     if not normalized:
         return True
-    if normalized in STOP_TERMS | EXTRA_STOP_TERMS:
+    if normalized in STOP_TERMS | EXTRA_STOP_TERMS | GENERIC_SUBTHEME_STOPWORDS:
         return True
     if normalized in stock_names:
         return True
@@ -77,6 +159,10 @@ def _is_noise_keyword(keyword: str, stock_names: set[str]) -> bool:
     if normalized.isdigit():
         return True
     return False
+
+
+def _is_ascii_only(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9]+", value))
 
 
 def _split_profile_terms(value: Any) -> list[str]:
@@ -180,6 +266,44 @@ def _load_pdf_theme_keywords(stock_names: list[str]) -> list[dict[str, Any]]:
             return _rows_to_dicts(cursor)
 
 
+def _load_news_subtheme_hits(
+    stock_names: list[str],
+    report_date: date,
+) -> list[dict[str, Any]]:
+    if not stock_names:
+        return []
+    sql = """
+        SELECT
+            stock_name,
+            COALESCE(title, '') || ' ' ||
+            COALESCE(description, '') || ' ' ||
+            COALESCE(ai_summary, '') AS news_text
+        FROM news_article
+        WHERE stock_name = ANY(%(stock_names)s)
+            AND (
+                published_at::date = %(report_date)s
+                OR created_at::date = %(report_date)s
+            )
+    """
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                sql,
+                {"stock_names": stock_names, "report_date": report_date},
+            )
+            return _rows_to_dicts(cursor)
+
+
+def _extract_priority_keywords_from_text(text: Any) -> list[str]:
+    normalized_text = str(text or "").replace(" ", "")
+    hits = []
+    for keyword in sorted(_priority_keywords(), key=len, reverse=True):
+        compact_keyword = keyword.replace(" ", "")
+        if compact_keyword and compact_keyword in normalized_text:
+            hits.append(keyword)
+    return hits
+
+
 def _add_candidate(
     grouped: dict[str, dict[str, Any]],
     keyword: str,
@@ -211,6 +335,24 @@ def _add_candidate(
     entry["pdf_count"] += int(pdf_count or 0)
     entry["source_weight"] += weight
     entry["sources"].add(source)
+
+
+def _allow_final_subtheme(
+    subtheme: str,
+    stocks: list[dict[str, Any]],
+    pdf_count: int,
+    stock_names: set[str],
+) -> bool:
+    normalized = _normalize_keyword(subtheme)
+    if _is_noise_keyword(normalized, stock_names):
+        return False
+    if _is_priority_keyword(normalized):
+        return True
+    if len(normalized) <= 2:
+        return False
+    if _is_ascii_only(normalized):
+        return False
+    return pdf_count >= 3 and len(stocks) >= 2
 
 
 def build_subtheme_rankings(report_date: date) -> list[dict[str, Any]]:
@@ -266,10 +408,27 @@ def build_subtheme_rankings(report_date: date) -> list[dict[str, Any]]:
                 stock_names=stock_names,
             )
 
+    for row in _load_news_subtheme_hits(list(stock_names), report_date):
+        stock = stock_by_name.get(row["stock_name"])
+        if not stock:
+            continue
+        for keyword in _extract_priority_keywords_from_text(row.get("news_text")):
+            _add_candidate(
+                grouped,
+                keyword,
+                stock,
+                source="news_article",
+                weight=50,
+                stock_names=stock_names,
+            )
+
     rankings: list[dict[str, Any]] = []
     for subtheme, entry in grouped.items():
         stocks = list(entry["stocks_by_name"].values())
         if not stocks:
+            continue
+        pdf_count = int(entry["pdf_count"] or 0)
+        if not _allow_final_subtheme(subtheme, stocks, pdf_count, stock_names):
             continue
         ranked_stocks = sorted(stocks, key=_stock_sort_key, reverse=True)
         scores = [
@@ -280,8 +439,6 @@ def build_subtheme_rankings(report_date: date) -> list[dict[str, Any]]:
         average_score = sum(scores) / len(scores) if scores else 0
         leader = ranked_stocks[0]
         leader_score = _safe_float(leader.get("investment_score")) or 0
-        pdf_count = int(entry["pdf_count"] or 0)
-
         stock_count_score = min(30, len(stocks) * 10)
         average_score_part = min(40, average_score * 0.4)
         leader_score_part = min(20, leader_score * 0.2)
