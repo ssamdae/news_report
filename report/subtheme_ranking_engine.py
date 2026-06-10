@@ -146,11 +146,30 @@ def _is_priority_keyword(keyword: str) -> bool:
     return _normalize_keyword(keyword) in _priority_keywords()
 
 
+def _contains_stopword(keyword: str) -> bool:
+    normalized = _normalize_keyword(keyword)
+    compact = re.sub(r"[\s#_/·,+&()\\[\\]{}-]+", "", normalized)
+    for stopword in STOP_TERMS | EXTRA_STOP_TERMS | GENERIC_SUBTHEME_STOPWORDS:
+        normalized_stopword = _normalize_keyword(stopword)
+        compact_stopword = re.sub(
+            r"[\s#_/·,+&()\\[\\]{}-]+",
+            "",
+            normalized_stopword,
+        )
+        if normalized_stopword and normalized_stopword in normalized:
+            return True
+        if compact_stopword and compact_stopword in compact:
+            return True
+    return False
+
+
 def _is_noise_keyword(keyword: str, stock_names: set[str]) -> bool:
     normalized = _normalize_keyword(keyword)
     if not normalized:
         return True
-    if normalized in STOP_TERMS | EXTRA_STOP_TERMS | GENERIC_SUBTHEME_STOPWORDS:
+    if _is_priority_keyword(normalized):
+        return False
+    if _contains_stopword(normalized):
         return True
     if normalized in stock_names:
         return True
@@ -342,20 +361,23 @@ def _allow_final_subtheme(
     stocks: list[dict[str, Any]],
     pdf_count: int,
     stock_names: set[str],
-) -> bool:
+) -> tuple[bool, bool]:
     normalized = _normalize_keyword(subtheme)
     if _is_noise_keyword(normalized, stock_names):
-        return False
+        return False, False
     if _is_priority_keyword(normalized):
-        return True
+        return True, False
     if len(normalized) <= 2:
-        return False
+        return False, False
     if _is_ascii_only(normalized):
-        return False
-    return pdf_count >= 3 and len(stocks) >= 2
+        return False, False
+    return pdf_count >= 3 and len(stocks) >= 2, True
 
 
-def build_subtheme_rankings(report_date: date) -> list[dict[str, Any]]:
+def build_subtheme_rankings(
+    report_date: date,
+    include_debug: bool = False,
+) -> list[dict[str, Any]]:
     signal_rows = _load_signal_stock_rows(report_date)
     if not signal_rows:
         return []
@@ -428,7 +450,15 @@ def build_subtheme_rankings(report_date: date) -> list[dict[str, Any]]:
         if not stocks:
             continue
         pdf_count = int(entry["pdf_count"] or 0)
-        if not _allow_final_subtheme(subtheme, stocks, pdf_count, stock_names):
+        allowed, debug_only = _allow_final_subtheme(
+            subtheme,
+            stocks,
+            pdf_count,
+            stock_names,
+        )
+        if not allowed:
+            continue
+        if debug_only and not include_debug:
             continue
         ranked_stocks = sorted(stocks, key=_stock_sort_key, reverse=True)
         scores = [
@@ -471,6 +501,7 @@ def build_subtheme_rankings(report_date: date) -> list[dict[str, Any]]:
                     for row in ranked_stocks
                 ],
                 "pdf_count": pdf_count,
+                "debug_only": debug_only,
                 "sources": sorted(entry["sources"]),
                 "score_breakdown": {
                     "stock_count": round(stock_count_score, 2),

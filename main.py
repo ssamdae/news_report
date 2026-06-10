@@ -777,11 +777,13 @@ def test_theme_ranking_command(report_date: date) -> None:
         )
 
 
-def test_subtheme_ranking_command(report_date: date) -> None:
+def test_subtheme_ranking_command(report_date: date, debug: bool = False) -> None:
     from report.subtheme_ranking_engine import build_subtheme_rankings
 
-    rankings = build_subtheme_rankings(report_date)
+    rankings = build_subtheme_rankings(report_date, include_debug=debug)
     print(f"서브테마 순위 기준일: {report_date.isoformat()}")
+    if debug:
+        print("debug: 화이트리스트 외 예외 후보 포함")
     if not rankings:
         print("서브테마 랭킹 데이터가 없습니다.")
         return
@@ -798,7 +800,8 @@ def test_subtheme_ranking_command(report_date: date) -> None:
             if stock != row.get("leader")
         ]
         breakdown = row.get("score_breakdown") or {}
-        print(f"{index}위 {row['subtheme']}")
+        debug_label = " [debug-only]" if row.get("debug_only") else ""
+        print(f"{index}위 {row['subtheme']}{debug_label}")
         print(f"{row['score']}점")
         print()
         print("대장주")
@@ -1229,6 +1232,11 @@ def main() -> None:
         action="store_true",
         help="Export backtest result rows to CSV",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print debug-only rows for commands that support it",
+    )
     args = parser.parse_args()
 
     if args.command == "test-db":
@@ -1370,7 +1378,7 @@ def main() -> None:
     if args.command == "test-subtheme-ranking":
         if not args.date:
             parser.error("test-subtheme-ranking requires --date")
-        test_subtheme_ranking_command(_parse_date(args.date))
+        test_subtheme_ranking_command(_parse_date(args.date), debug=args.debug)
         return
 
     if args.command == "backfill-investment-grade":
