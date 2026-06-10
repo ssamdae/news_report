@@ -166,13 +166,29 @@ def _print_backtest_cases(title: str, rows: list[dict]) -> None:
 def _print_500b_two_bearish_backtest_result(result: dict) -> None:
     params = result["params"]
     summary = result["summary"]
+    source_stats = result.get("source_stats") or {}
 
     print("[500억봉 2음봉 백테스트]")
     print(f"기간: {params['from_date']} ~ {params['to_date']}")
     print(f"lookahead_days: {params['lookahead_days']}")
     print(f"volume_ratio: {float(params['volume_ratio']):.2f}")
+    print(f"source: {params.get('source', 'both')}")
+    print(f"signal_event 이벤트: {source_stats.get('signal_event_count', 0)}건")
+    print(f"pdf_signal_item 이벤트: {source_stats.get('pdf_signal_item_count', 0)}건")
+    print(f"매핑 성공: {source_stats.get('pdf_mapping_success_count', 0)}건")
+    print(f"가격데이터 존재: {source_stats.get('price_data_event_count', 0)}건")
+    if source_stats.get("event_count_after_source_dedupe") is not None:
+        print(f"소스 중복 제거 후: {source_stats.get('event_count_after_source_dedupe', 0)}건")
     print(f"이벤트 수: {result['event_count']}건")
     print(f"결과 저장: {result['saved_count']}건")
+    if _parse_date(params["to_date"]) > date.today():
+        print("주의: to-date가 현재 날짜보다 미래입니다. 일부 수익률이 NULL일 수 있습니다.")
+    if result.get("d20_null_count"):
+        print(
+            "주의: 최근 20거래일 이내 이벤트 또는 가격 데이터 부족 이벤트는 "
+            "D+20 수익률이 NULL일 수 있습니다. "
+            f"(NULL {result['d20_null_count']}건)"
+        )
     if result.get("csv_path"):
         print(f"CSV: {result['csv_path']}")
     print()
@@ -227,6 +243,7 @@ def backtest_500b_two_bearish_command(
     min_d0_trade_amount: int,
     dedupe_window_days: int | None,
     export_csv: bool,
+    source: str = "both",
     sweep_volume_ratio: list[float] | None = None,
 ) -> None:
     from database.backtest_repository import run_500b_two_bearish_backtest
@@ -243,6 +260,7 @@ def backtest_500b_two_bearish_command(
             min_d0_trade_amount=min_d0_trade_amount,
             dedupe_window_days=dedupe_window_days,
             export_csv=export_csv,
+            source=source,
         )
         _print_500b_two_bearish_backtest_result(result)
         two_bearish = result["summary"].get("거래량감소 연속 2음봉", {})
@@ -709,6 +727,21 @@ def test_investment_grade_command(stock_name: str) -> None:
         knowledge_context=get_stock_knowledge_context(stock_name),
         pattern_stats=get_stock_pattern_stats(stock_name),
     )
+    breakdown = result.get("score_breakdown") or {}
+    debug = result.get("debug") or {}
+    print(f"investment_score: {result.get('investment_score')}")
+    print(f"investment_grade: {result.get('investment_grade')}")
+    print(
+        "score_breakdown: "
+        f"pattern={breakdown.get('pattern', 0)}, "
+        f"knowledge={breakdown.get('knowledge', 0)}, "
+        f"news={breakdown.get('news', 0)}"
+    )
+    print(f"pattern_boost_applied: {debug.get('pattern_boost_applied', False)}")
+    print(f"risk_cap_applied: {debug.get('risk_cap_applied', False)}")
+    if debug.get("risk_cap_reason"):
+        print(f"risk_cap_reason: {debug['risk_cap_reason']}")
+    print()
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
 
 
@@ -1111,6 +1144,12 @@ def main() -> None:
         help="Remove same-stock signal events within this many trading days",
     )
     parser.add_argument(
+        "--source",
+        choices=["signal_event", "pdf_signal_item", "both"],
+        default="both",
+        help="Backtest event source: signal_event, pdf_signal_item, or both",
+    )
+    parser.add_argument(
         "--export-csv",
         action="store_true",
         help="Export backtest result rows to CSV",
@@ -1146,6 +1185,7 @@ def main() -> None:
             min_d0_trade_amount=args.min_d0_trade_amount,
             dedupe_window_days=args.dedupe_window_days,
             export_csv=args.export_csv,
+            source=args.source,
             sweep_volume_ratio=(
                 _parse_float_list(args.sweep_volume_ratio)
                 if args.sweep_volume_ratio

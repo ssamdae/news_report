@@ -116,6 +116,161 @@ def _load_signal_events(
             return _rows_to_dicts(cursor)
 
 
+def _load_signal_event_candidates(
+    from_date: date,
+    to_date: date,
+    min_d0_trade_amount: int,
+) -> list[dict[str, Any]]:
+    sql = """
+        SELECT
+            se.stock_code,
+            sm.stock_name,
+            se.signal_date,
+            'signal_event' AS event_source,
+            dp.volume AS d0_volume,
+            dp.close_price AS d0_close_price,
+            COALESCE(se.trading_value, dp.trading_value) AS d0_trading_value
+        FROM signal_event se
+        JOIN stock_master sm
+            ON sm.stock_code = se.stock_code
+        JOIN daily_price dp
+            ON dp.stock_code = se.stock_code
+            AND dp.trade_date = se.signal_date
+        WHERE se.signal_date BETWEEN %(from_date)s AND %(to_date)s
+            AND se.signal_name LIKE '%%500억%%'
+            AND COALESCE(se.trading_value, dp.trading_value) >= %(min_amount)s
+        ORDER BY se.stock_code, se.signal_date
+    """
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                sql,
+                {
+                    "from_date": from_date,
+                    "to_date": to_date,
+                    "min_amount": min_d0_trade_amount,
+                },
+            )
+            return _rows_to_dicts(cursor)
+
+
+def _count_pdf_signal_items(from_date: date, to_date: date) -> int:
+    sql = """
+        SELECT COUNT(*)
+        FROM pdf_signal_item
+        WHERE report_date BETWEEN %(from_date)s AND %(to_date)s
+    """
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, {"from_date": from_date, "to_date": to_date})
+            return int(cursor.fetchone()[0] or 0)
+
+
+def _count_pdf_signal_item_mapping_success(from_date: date, to_date: date) -> int:
+    sql = """
+        SELECT COUNT(DISTINCT p.id)
+        FROM pdf_signal_item p
+        JOIN stock_master sm
+            ON sm.stock_name = p.stock_name
+        WHERE p.report_date BETWEEN %(from_date)s AND %(to_date)s
+    """
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, {"from_date": from_date, "to_date": to_date})
+            return int(cursor.fetchone()[0] or 0)
+
+
+def _load_pdf_signal_item_candidates(
+    from_date: date,
+    to_date: date,
+    min_d0_trade_amount: int,
+) -> list[dict[str, Any]]:
+    sql = """
+        SELECT
+            sm.stock_code,
+            sm.stock_name,
+            p.report_date AS signal_date,
+            'pdf_signal_item' AS event_source,
+            dp.volume AS d0_volume,
+            dp.close_price AS d0_close_price,
+            dp.trading_value AS d0_trading_value
+        FROM pdf_signal_item p
+        JOIN stock_master sm
+            ON sm.stock_name = p.stock_name
+        JOIN daily_price dp
+            ON dp.stock_code = sm.stock_code
+            AND dp.trade_date = p.report_date
+        WHERE p.report_date BETWEEN %(from_date)s AND %(to_date)s
+            AND dp.trading_value >= %(min_amount)s
+        ORDER BY sm.stock_code, p.report_date
+    """
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                sql,
+                {
+                    "from_date": from_date,
+                    "to_date": to_date,
+                    "min_amount": min_d0_trade_amount,
+                },
+            )
+            return _rows_to_dicts(cursor)
+
+
+def _load_backtest_events(
+    from_date: date,
+    to_date: date,
+    min_d0_trade_amount: int,
+    source: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    source = source.lower()
+    if source not in {"signal_event", "pdf_signal_item", "both"}:
+        raise ValueError("--source must be one of: signal_event, pdf_signal_item, both")
+
+    signal_events = (
+        _load_signal_event_candidates(from_date, to_date, min_d0_trade_amount)
+        if source in {"signal_event", "both"}
+        else []
+    )
+    pdf_raw_count = (
+        _count_pdf_signal_items(from_date, to_date)
+        if source in {"pdf_signal_item", "both"}
+        else 0
+    )
+    pdf_mapping_success_count = (
+        _count_pdf_signal_item_mapping_success(from_date, to_date)
+        if source in {"pdf_signal_item", "both"}
+        else 0
+    )
+    pdf_events = (
+        _load_pdf_signal_item_candidates(from_date, to_date, min_d0_trade_amount)
+        if source in {"pdf_signal_item", "both"}
+        else []
+    )
+
+    deduped: dict[tuple[str, date], dict[str, Any]] = {}
+    for event in [*pdf_events, *signal_events]:
+        key = (event["stock_code"], event["signal_date"])
+        existing = deduped.get(key)
+        if existing is None or event["event_source"] == "signal_event":
+            deduped[key] = event
+
+    stats = {
+        "source": source,
+        "signal_event_count": len(signal_events),
+        "pdf_signal_item_count": pdf_raw_count,
+        "pdf_mapping_success_count": pdf_mapping_success_count,
+        "pdf_price_event_count": len(pdf_events),
+        "event_count_before_dedupe": len(signal_events) + len(pdf_events),
+        "event_count_after_source_dedupe": len(deduped),
+    }
+    events = sorted(
+        deduped.values(),
+        key=lambda row: (row["stock_code"], row["signal_date"]),
+    )
+    return events, stats
+
+
 def _load_price_rows(
     stock_codes: list[str],
     from_date: date,
@@ -399,14 +554,17 @@ def summarize_results(rows: list[dict[str, Any]]) -> dict[str, Any]:
             if avg_max is not None and avg_min not in (None, 0)
             else None
         )
+        d20_rows = [
+            row for row in strategy_rows if row.get("ret_d20") is not None
+        ]
         row_summary["best_cases"] = sorted(
-            strategy_rows,
-            key=lambda row: row.get("ret_d20") if row.get("ret_d20") is not None else -9999,
+            d20_rows,
+            key=lambda row: row.get("ret_d20"),
             reverse=True,
         )[:10]
         row_summary["worst_cases"] = sorted(
-            strategy_rows,
-            key=lambda row: row.get("ret_d20") if row.get("ret_d20") is not None else 9999,
+            d20_rows,
+            key=lambda row: row.get("ret_d20"),
         )[:10]
         summary[strategy_name] = row_summary
     return summary
@@ -441,6 +599,7 @@ def run_500b_two_bearish_backtest(
     dedupe_window_days: int | None = None,
     export_csv: bool = False,
     save_to_db: bool = True,
+    source: str = "both",
 ) -> dict[str, Any]:
     holding_days = holding_days or [3, 5, 10, 20]
     params = {
@@ -451,13 +610,29 @@ def run_500b_two_bearish_backtest(
         "holding_days": holding_days,
         "min_d0_trade_amount": min_d0_trade_amount,
         "dedupe_window_days": dedupe_window_days,
+        "source": source,
     }
 
-    events = _load_signal_events(from_date, to_date, min_d0_trade_amount)
+    events, source_stats = _load_backtest_events(
+        from_date,
+        to_date,
+        min_d0_trade_amount,
+        source,
+    )
     stock_codes = sorted({event["stock_code"] for event in events})
     price_to_date = to_date + timedelta(days=max(90, (lookahead_days + 20) * 3))
     rows_by_stock = _load_price_rows(stock_codes, from_date, price_to_date)
+    price_available_codes = {
+        stock_code for stock_code, rows in rows_by_stock.items() if rows
+    }
+    source_stats["price_data_stock_count"] = len(price_available_codes)
+    source_stats["price_data_event_count"] = sum(
+        1
+        for event in events
+        if event["stock_code"] in price_available_codes
+    )
     events = _dedupe_events(events, rows_by_stock, dedupe_window_days)
+    source_stats["event_count_after_window_dedupe"] = len(events)
 
     results: list[dict[str, Any]] = []
     skipped_count = 0
@@ -551,12 +726,17 @@ def run_500b_two_bearish_backtest(
 
     saved_count = _save_results(results) if save_to_db else 0
     csv_path = _export_csv(results, params) if export_csv else None
+    d20_null_count = sum(
+        1 for row in results if row.get("ret_d20") is None
+    )
     return {
         "params": params,
         "event_count": len(events),
         "skipped_count": skipped_count,
         "result_count": len(results),
         "saved_count": saved_count,
+        "source_stats": source_stats,
+        "d20_null_count": d20_null_count,
         "csv_path": csv_path,
         "results": results,
         "summary": summarize_results(results),

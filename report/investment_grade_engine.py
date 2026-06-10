@@ -6,16 +6,17 @@ from typing import Any
 
 GROWTH_THEME_KEYWORDS = {
     "AI",
-    "반도체",
-    "HBM",
     "로봇",
     "휴머노이드",
+    "반도체",
+    "HBM",
     "전력",
     "전선",
     "원전",
     "방산",
     "조선",
     "바이오",
+    "이차전지",
     "2차전지",
     "ESS",
     "데이터센터",
@@ -53,11 +54,18 @@ IMPORTANT_POSITIVE_KEYWORDS = {
     "수주",
     "공급계약",
     "실적",
+    "영업이익",
     "흑자전환",
     "AI",
     "반도체",
+    "HBM",
     "로봇",
+    "휴머노이드",
     "정책",
+    "정부",
+    "투자",
+    "증설",
+    "M&A",
 }
 
 NEGATIVE_KEYWORDS = {
@@ -72,7 +80,6 @@ NEGATIVE_KEYWORDS = {
     "전환사채",
     "CB",
     "BW",
-    "리스크",
     "급락",
 }
 
@@ -142,30 +149,32 @@ def _calculate_pattern_score(
         score += 4
 
     if day5_win_rate is not None:
-        if day5_win_rate >= 65:
+        if day5_win_rate >= 70:
+            score += 15
+        elif day5_win_rate >= 60:
             score += 12
-        elif day5_win_rate >= 55:
-            score += 10
-        elif day5_win_rate >= 45:
-            score += 6
-        elif day5_win_rate >= 35:
-            score += 3
+        elif day5_win_rate >= 50:
+            score += 8
+        elif day5_win_rate >= 40:
+            score += 5
 
     if day5_avg_return is not None:
         if day5_avg_return >= 7:
-            score += 12
+            score += 18
         elif day5_avg_return >= 5:
-            score += 10
+            score += 15
         elif day5_avg_return >= 3:
-            score += 7
+            score += 10
         elif day5_avg_return > 0:
-            score += 4
+            score += 5
 
     if min_return_5d is not None:
-        if min_return_5d >= -15:
-            score += 4
-        elif min_return_5d >= -25:
-            score += 2
+        if min_return_5d >= -10:
+            score += 5
+        elif min_return_5d >= -20:
+            score += 3
+        elif min_return_5d >= -30:
+            score += 1
 
     if signal_count:
         reasons.append(f"과거 {signal_count}회 출현")
@@ -182,7 +191,7 @@ def _calculate_pattern_score(
         "day5_avg_return": day5_avg_return,
         "min_return_5d": min_return_5d,
     }
-    return int(min(score, 40)), debug
+    return int(min(score, 50)), debug
 
 
 def _calculate_knowledge_score(
@@ -196,24 +205,24 @@ def _calculate_knowledge_score(
     source_pdf_count = _to_int(pattern_stats.get("source_pdf_count"))
 
     if primary_theme:
-        score += 8
+        score += 6
         reasons.append(f"{primary_theme} 대표 테마와 연관")
 
     if source_pdf_count >= 20:
-        score += 10
-    elif source_pdf_count >= 10:
         score += 8
+    elif source_pdf_count >= 10:
+        score += 6
     elif source_pdf_count >= 5:
-        score += 5
+        score += 4
 
     if source_pdf_count:
         reasons.append(f"PDF 과거 사례 {source_pdf_count}회")
 
     keyword_count = len(keywords)
     if keyword_count >= 5:
-        score += 7
-    elif keyword_count >= 3:
         score += 5
+    elif keyword_count >= 3:
+        score += 4
     elif keyword_count >= 1:
         score += 3
 
@@ -225,10 +234,10 @@ def _calculate_knowledge_score(
         keyword for keyword in GROWTH_THEME_KEYWORDS if _keyword_present(keyword_text, keyword)
     ]
     if growth_matches:
-        score += 5
+        score += 6
         reasons.append(f"{growth_matches[0]} 핵심 성장 테마와 연관")
 
-    return int(min(score, 30))
+    return int(min(score, 25))
 
 
 def _calculate_news_score(
@@ -257,7 +266,7 @@ def _calculate_news_score(
     if negative_matches:
         reasons.append("주의 키워드: " + ", ".join(sorted(negative_matches)[:5]))
 
-    return int(_clamp(score, 0, 30))
+    return int(_clamp(score, 0, 25))
 
 
 def _grade_from_score(score: float) -> str:
@@ -293,10 +302,50 @@ def calculate_investment_grade(
         _clamp(pattern_score + knowledge_score + news_score, 0, 100),
         2,
     )
+    pattern_boost_applied = False
+    risk_cap_applied = False
+    risk_cap_reason = None
+
+    signal_count = _to_int(pattern_stats.get("signal_count"))
+    day5_win_rate = _to_float(pattern_stats.get("day5_win_rate"))
+    day5_avg_return = _to_float(pattern_stats.get("day5_avg_return"))
+    min_return_5d = _to_float(pattern_stats.get("min_return_5d"))
+
+    if (
+        signal_count >= 15
+        and day5_win_rate is not None
+        and day5_win_rate >= 65
+        and day5_avg_return is not None
+        and day5_avg_return >= 5
+        and total_score < 65
+    ):
+        total_score = 65
+        pattern_boost_applied = True
+        grade_reasons.insert(0, "과거 패턴 성과 우수로 등급 보정")
+
+    investment_grade = _grade_from_score(total_score)
+    if news_score <= 5 and min_return_5d is not None and min_return_5d <= -25:
+        if investment_grade == "A":
+            investment_grade = "B"
+            risk_cap_applied = True
+            risk_cap_reason = "뉴스 모멘텀 제한 및 5일 최대손실 리스크"
+            grade_reasons.insert(0, "변동성 리스크로 등급 상단 제한")
+
+    if (
+        day5_avg_return is not None
+        and day5_avg_return < 0
+        and min_return_5d is not None
+        and min_return_5d <= -30
+    ):
+        if investment_grade in {"A", "B"}:
+            investment_grade = "C"
+            risk_cap_applied = True
+            risk_cap_reason = "D+5 평균 수익률 부진 및 5일 최대손실 리스크"
+            grade_reasons.insert(0, "변동성 리스크로 등급 상단 제한")
 
     return {
         "investment_score": total_score,
-        "investment_grade": _grade_from_score(total_score),
+        "investment_grade": investment_grade,
         "grade_reasons": grade_reasons[:6],
         "score_breakdown": {
             "pattern": pattern_score,
@@ -306,5 +355,8 @@ def calculate_investment_grade(
         "debug": {
             "stock_name": stock_name,
             **debug,
+            "pattern_boost_applied": pattern_boost_applied,
+            "risk_cap_applied": risk_cap_applied,
+            "risk_cap_reason": risk_cap_reason,
         },
     }
