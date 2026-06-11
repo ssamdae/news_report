@@ -692,6 +692,8 @@ def _investment_section_text(analysis: dict[str, Any]) -> str:
     detail = _investment_detail(analysis.get("investment_grade_detail"))
     breakdown = detail.get("score_breakdown") or {}
     reasons = detail.get("grade_reasons") or []
+    debug = detail.get("debug") or {}
+    important_news_keywords = debug.get("important_news_keywords") or []
     score_text = "-" if score is None else f"{score:.0f}점"
 
     lines = [
@@ -703,6 +705,11 @@ def _investment_section_text(analysis: dict[str, Any]) -> str:
             f"뉴스 {breakdown.get('news', 0)}점"
         ),
     ]
+    if important_news_keywords:
+        lines.append(
+            "중요 뉴스: "
+            + ", ".join(str(keyword) for keyword in important_news_keywords[:4])
+        )
     if reasons:
         lines.append("주요 이유")
         lines.extend(f"- {reason}" for reason in reasons[:4])
@@ -831,6 +838,8 @@ def _top_pick_text(
             detail = _investment_detail(analysis.get("investment_grade_detail"))
             reasons = detail.get("grade_reasons") or []
             breakdown = detail.get("score_breakdown") or {}
+            debug = detail.get("debug") or {}
+            important_news_keywords = debug.get("important_news_keywords") or []
             grade = _text(analysis.get("investment_grade"))
             stock_name = _text(analysis.get("stock_name"))
             lines.append(f"{index}. [{grade}] {stock_name} / {investment_score:.0f}점")
@@ -843,6 +852,11 @@ def _top_pick_text(
                 )
             if day5_win_rate is not None:
                 display_reasons.append(f"D+5 상승확률 {day5_win_rate:.1f}%")
+            if important_news_keywords:
+                display_reasons.append(
+                    "뉴스 모멘텀: "
+                    + ", ".join(str(keyword) for keyword in important_news_keywords[:3])
+                )
             display_reasons.extend(list(reasons[:3]))
             if grade == "C" or int(breakdown.get("news") or 0) <= 10:
                 display_reasons.append("뉴스 모멘텀 제한으로 등급 상단이 제한")

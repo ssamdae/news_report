@@ -726,6 +726,7 @@ def test_investment_grade_command(stock_name: str) -> None:
         ai_analysis_text=ai_analysis_text,
         knowledge_context=get_stock_knowledge_context(stock_name),
         pattern_stats=get_stock_pattern_stats(stock_name),
+        news_items=news_items,
     )
     breakdown = result.get("score_breakdown") or {}
     debug = result.get("debug") or {}
@@ -739,6 +740,17 @@ def test_investment_grade_command(stock_name: str) -> None:
     )
     print(f"pattern_boost_applied: {debug.get('pattern_boost_applied', False)}")
     print(f"risk_cap_applied: {debug.get('risk_cap_applied', False)}")
+    print(f"news_score: {breakdown.get('news', 0)}")
+    print("news_types: " + ", ".join(debug.get("news_types") or []))
+    print(
+        "important_news_keywords: "
+        + ", ".join(debug.get("important_news_keywords") or [])
+    )
+    matched_titles = debug.get("matched_news_titles") or []
+    if matched_titles:
+        print("matched_news_titles:")
+        for title in matched_titles[:5]:
+            print(f"- {title}")
     if debug.get("risk_cap_reason"):
         print(f"risk_cap_reason: {debug['risk_cap_reason']}")
     print()

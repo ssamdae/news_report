@@ -50,38 +50,105 @@ POSITIVE_KEYWORDS = {
     "계약",
 }
 
-IMPORTANT_POSITIVE_KEYWORDS = {
-    "수주",
-    "공급계약",
-    "실적",
-    "영업이익",
-    "흑자전환",
-    "AI",
-    "반도체",
-    "HBM",
-    "로봇",
-    "휴머노이드",
-    "정책",
-    "정부",
-    "투자",
-    "증설",
-    "M&A",
+TOP_NEWS_KEYWORDS = {
+    "수주": 12,
+    "공급계약": 12,
+    "대규모 공급": 12,
+    "독점 공급": 12,
+    "기술수출": 12,
+    "라이선스아웃": 12,
+    "LO": 10,
+    "특허": 10,
+    "물질특허": 14,
+    "FDA": 12,
+    "임상": 8,
+    "승인": 10,
+    "SOCAMM": 14,
+    "HBM": 12,
+    "AI메모리": 12,
+    "AI 메모리": 12,
+    "AI반도체": 12,
+    "데이터센터": 10,
+    "유리기판": 10,
+    "전력반도체": 10,
+    "정부정책": 10,
+    "정책": 8,
+    "국책과제": 10,
+    "M&A": 12,
+    "인수합병": 12,
+}
+
+MID_NEWS_KEYWORDS = {
+    "실적": 5,
+    "영업이익": 6,
+    "흑자전환": 7,
+    "증설": 5,
+    "투자": 5,
+    "공장": 4,
+    "양산": 6,
+    "고객사": 5,
+    "삼성전자": 6,
+    "SK하이닉스": 6,
+    "엔비디아": 6,
+    "TSMC": 6,
+    "로봇": 5,
+    "휴머노이드": 7,
+    "이차전지": 5,
+    "2차전지": 5,
+    "전해액": 5,
+    "원전": 5,
+    "방산": 5,
+    "우주항공": 5,
+}
+
+LOW_NEWS_KEYWORDS = {
+    "주가 상승": 2,
+    "급등": 2,
+    "강세": 2,
+    "거래량 증가": 2,
+    "특징주": 2,
+    "장중 상승": 2,
+    "인기 검색 종목": 1,
 }
 
 NEGATIVE_KEYWORDS = {
-    "적자",
-    "소송",
-    "감사의견",
-    "불성실공시",
-    "상장폐지",
-    "횡령",
-    "배임",
-    "유상증자",
-    "전환사채",
-    "CB",
-    "BW",
-    "급락",
+    "적자": -8,
+    "영업손실": -10,
+    "관리종목": -18,
+    "상장폐지": -20,
+    "감사의견": -15,
+    "횡령": -18,
+    "배임": -18,
+    "불성실공시": -12,
+    "유상증자": -8,
+    "전환사채": -8,
+    "CB": -8,
+    "BW": -8,
+    "소송": -10,
+    "임상 실패": -20,
+    "허가 반려": -18,
+    "계약 해지": -15,
+    "급락": -8,
 }
+
+CONTRACT_KEYWORDS = {"수주", "공급계약", "대규모 공급", "독점 공급", "계약"}
+POLICY_KEYWORDS = {"정부정책", "정책", "국책과제", "정부"}
+TECH_KEYWORDS = {
+    "특허",
+    "물질특허",
+    "SOCAMM",
+    "HBM",
+    "AI메모리",
+    "AI 메모리",
+    "AI반도체",
+    "데이터센터",
+    "유리기판",
+    "전력반도체",
+}
+BIO_TECH_KEYWORDS = {"기술수출", "라이선스아웃", "LO", "FDA", "임상", "승인", "ADC"}
+EARNINGS_KEYWORDS = {"실적", "영업이익", "흑자전환"}
+PRICE_ONLY_KEYWORDS = set(LOW_NEWS_KEYWORDS)
+RISK_KEYWORDS = set(NEGATIVE_KEYWORDS)
 
 
 def _to_float(value: Any) -> float | None:
@@ -120,6 +187,10 @@ def _as_context_dict(value: dict | str | None) -> dict[str, Any]:
 
 def _keyword_present(text: str, keyword: str) -> bool:
     return keyword.lower() in text.lower()
+
+
+def _dedupe_keep_order(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(values))
 
 
 def _knowledge_keywords(context: dict[str, Any]) -> list[str]:
@@ -240,33 +311,118 @@ def _calculate_knowledge_score(
     return int(min(score, 25))
 
 
+def _news_item_text(item: dict[str, Any]) -> str:
+    return " ".join(
+        str(item.get(key) or "")
+        for key in ("title", "description", "ai_summary", "summary")
+    )
+
+
+def calculate_news_importance_score(
+    news_items: list[dict[str, Any]] | None = None,
+    news_text: str | None = None,
+    ai_analysis_text: str | None = None,
+) -> dict[str, Any]:
+    news_items = news_items or []
+    combined_parts = [news_text or "", ai_analysis_text or ""]
+    combined_parts.extend(_news_item_text(item) for item in news_items)
+    combined_text = "\n".join(combined_parts)
+
+    score = 0
+    top_matches: list[str] = []
+    mid_matches: list[str] = []
+    low_matches: list[str] = []
+    negative_matches: list[str] = []
+    news_types: set[str] = set()
+    matched_titles: list[str] = []
+
+    def add_titles_for_keyword(keyword: str) -> None:
+        for item in news_items:
+            title = str(item.get("title") or "").strip()
+            if title and _keyword_present(_news_item_text(item), keyword):
+                matched_titles.append(title)
+
+    for keyword, weight in TOP_NEWS_KEYWORDS.items():
+        if not _keyword_present(combined_text, keyword):
+            continue
+        top_matches.append(keyword)
+        score += weight
+        add_titles_for_keyword(keyword)
+
+    for keyword, weight in MID_NEWS_KEYWORDS.items():
+        if not _keyword_present(combined_text, keyword):
+            continue
+        mid_matches.append(keyword)
+        score += weight
+        add_titles_for_keyword(keyword)
+
+    for keyword, weight in LOW_NEWS_KEYWORDS.items():
+        if not _keyword_present(combined_text, keyword):
+            continue
+        low_matches.append(keyword)
+        score += weight
+        add_titles_for_keyword(keyword)
+
+    for keyword, penalty in NEGATIVE_KEYWORDS.items():
+        if not _keyword_present(combined_text, keyword):
+            continue
+        negative_matches.append(keyword)
+        score += penalty
+        add_titles_for_keyword(keyword)
+
+    matched_positive = set(top_matches + mid_matches + low_matches)
+    if matched_positive & CONTRACT_KEYWORDS:
+        news_types.add("CONTRACT")
+    if matched_positive & POLICY_KEYWORDS:
+        news_types.add("POLICY")
+    if matched_positive & TECH_KEYWORDS:
+        news_types.add("TECH")
+    if matched_positive & BIO_TECH_KEYWORDS:
+        news_types.add("BIO_TECH")
+    if matched_positive & EARNINGS_KEYWORDS:
+        news_types.add("EARNINGS")
+    if low_matches and not top_matches and not mid_matches:
+        news_types.add("PRICE_ONLY")
+    if negative_matches:
+        news_types.add("RISK")
+
+    high_importance_count = len(set(top_matches))
+    if high_importance_count >= 2 and "RISK" not in news_types:
+        score = max(score, 15)
+    if ({"TECH", "CONTRACT"} & news_types) and "RISK" not in news_types:
+        score = max(score, 12)
+    if news_types == {"PRICE_ONLY"}:
+        score = min(score, 5)
+
+    important_keywords = _dedupe_keep_order(top_matches + mid_matches)
+    return {
+        "score": int(_clamp(score, 0, 25)),
+        "news_types": sorted(news_types),
+        "important_news_keywords": important_keywords[:12],
+        "low_importance_keywords": _dedupe_keep_order(low_matches)[:8],
+        "negative_news_keywords": _dedupe_keep_order(negative_matches)[:8],
+        "matched_news_titles": _dedupe_keep_order(matched_titles)[:5],
+    }
+
+
 def _calculate_news_score(
     news_text: str | None,
     ai_analysis_text: str | None,
     reasons: list[str],
-) -> int:
-    combined_text = f"{news_text or ''}\n{ai_analysis_text or ''}"
-    score = 0
-    positive_matches = []
-    negative_matches = []
-
-    for keyword in POSITIVE_KEYWORDS:
-        if not _keyword_present(combined_text, keyword):
-            continue
-        positive_matches.append(keyword)
-        score += 5 if keyword in IMPORTANT_POSITIVE_KEYWORDS else 3
-
-    for keyword in NEGATIVE_KEYWORDS:
-        if _keyword_present(combined_text, keyword):
-            negative_matches.append(keyword)
-            score -= 5
-
-    if positive_matches:
-        reasons.append("긍정 키워드: " + ", ".join(sorted(positive_matches)[:5]))
-    if negative_matches:
-        reasons.append("주의 키워드: " + ", ".join(sorted(negative_matches)[:5]))
-
-    return int(_clamp(score, 0, 25))
+    news_items: list[dict[str, Any]] | None = None,
+) -> tuple[int, dict[str, Any]]:
+    result = calculate_news_importance_score(
+        news_items=news_items,
+        news_text=news_text,
+        ai_analysis_text=ai_analysis_text,
+    )
+    important_keywords = result.get("important_news_keywords") or []
+    negative_keywords = result.get("negative_news_keywords") or []
+    if important_keywords:
+        reasons.append("뉴스 모멘텀: " + ", ".join(important_keywords[:5]))
+    if negative_keywords:
+        reasons.append("뉴스 리스크: " + ", ".join(negative_keywords[:5]))
+    return int(result["score"]), result
 
 
 def _grade_from_score(score: float) -> str:
@@ -285,6 +441,7 @@ def calculate_investment_grade(
     ai_analysis_text: str | None = None,
     knowledge_context: dict | str | None = None,
     pattern_stats: dict | None = None,
+    news_items: list[dict[str, Any]] | None = None,
 ) -> dict:
     context = _as_context_dict(knowledge_context)
     pattern_stats = pattern_stats or {}
@@ -296,7 +453,12 @@ def calculate_investment_grade(
         pattern_stats,
         grade_reasons,
     )
-    news_score = _calculate_news_score(news_text, ai_analysis_text, grade_reasons)
+    news_score, news_debug = _calculate_news_score(
+        news_text,
+        ai_analysis_text,
+        grade_reasons,
+        news_items=news_items,
+    )
 
     total_score = round(
         _clamp(pattern_score + knowledge_score + news_score, 0, 100),
@@ -358,5 +520,6 @@ def calculate_investment_grade(
             "pattern_boost_applied": pattern_boost_applied,
             "risk_cap_applied": risk_cap_applied,
             "risk_cap_reason": risk_cap_reason,
+            **news_debug,
         },
     }

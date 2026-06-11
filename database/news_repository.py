@@ -1351,6 +1351,7 @@ def analyze_stock_news(
         ai_analysis_text=ai_analysis_text,
         knowledge_context=knowledge_context,
         pattern_stats=pattern_stats,
+        news_items=news_items,
     )
     normalized["investment_score"] = investment_result["investment_score"]
     normalized["investment_grade"] = investment_result["investment_grade"]
@@ -2487,6 +2488,7 @@ def backfill_investment_grades(report_date: date) -> dict[str, Any]:
                         ai_analysis_text=ai_analysis_text,
                         knowledge_context=get_stock_knowledge_context(stock_name),
                         pattern_stats=get_stock_pattern_stats(stock_name),
+                        news_items=news_items,
                     )
                     cursor.execute(
                         update_sql,
