@@ -158,6 +158,24 @@ SPECIFIC_EARNINGS_KEYWORDS = {
     "사상 최대": 7,
     "컨센서스 상회": 6,
 }
+MARKET_SUMMARY_TITLE_KEYWORDS = {
+    "시황",
+    "마감시황",
+    "증시",
+    "코스피",
+    "코스닥",
+    "장중",
+    "마감",
+    "특징주 모음",
+    "상승 종목",
+    "하락 종목",
+    "인기 검색 종목",
+    "외국인 순매수",
+    "기관 순매수",
+    "거래대금 상위",
+    "급등주",
+    "강세주",
+}
 CUSTOMER_CONTEXT_KEYWORDS = {
     "신규 고객사": 6,
     "고객사 확대": 6,
@@ -395,6 +413,50 @@ def _major_company_context_valid(
     return False
 
 
+def _is_market_summary_title(title: str) -> bool:
+    return any(keyword in title for keyword in MARKET_SUMMARY_TITLE_KEYWORDS)
+
+
+def _keyword_near_text(text: str, anchor: str, keyword: str, radius: int = 80) -> bool:
+    if not anchor or not keyword:
+        return False
+    keyword_index = text.find(keyword)
+    while keyword_index != -1:
+        start = max(0, keyword_index - radius)
+        end = min(len(text), keyword_index + len(keyword) + radius)
+        if anchor in text[start:end]:
+            return True
+        keyword_index = text.find(keyword, keyword_index + len(keyword))
+    return False
+
+
+def _earnings_context_valid(
+    keyword: str,
+    stock_name: str | None,
+    news_items: list[dict[str, Any]],
+) -> bool:
+    if not stock_name:
+        return False
+    for item in news_items:
+        title = str(item.get("title") or "")
+        body = " ".join(
+            str(item.get(key) or "")
+            for key in ("description", "ai_summary", "summary")
+        )
+        item_text = f"{title} {body}"
+        if not _keyword_present(item_text, keyword):
+            continue
+        if stock_name in title and keyword in title:
+            return True
+        if _keyword_near_stock_name(body, stock_name, keyword):
+            return True
+        if _keyword_near_text(body, stock_name, keyword):
+            return True
+        if not _is_market_summary_title(title) and stock_name in item_text:
+            return True
+    return False
+
+
 def _knowledge_keywords(context: dict[str, Any]) -> list[str]:
     keywords = context.get("keywords") or []
     if not isinstance(keywords, list):
@@ -540,6 +602,7 @@ def calculate_news_importance_score(
     weak_matches: list[str] = []
     ignored_theme_matches: list[str] = []
     ignored_company_matches: list[str] = []
+    ignored_earnings_matches: list[str] = []
     specific_earnings_matches: list[str] = []
     news_types: set[str] = set()
     matched_titles: list[str] = []
@@ -578,6 +641,9 @@ def calculate_news_importance_score(
         if not _keyword_present(combined_text, keyword):
             continue
         if not keyword_allowed(keyword):
+            continue
+        if not _earnings_context_valid(keyword, stock_name, news_items):
+            ignored_earnings_matches.append(keyword)
             continue
         specific_earnings_matches.append(keyword)
         mid_matches.append(keyword)
@@ -666,6 +732,7 @@ def calculate_news_importance_score(
         "weak_news_keywords": _dedupe_keep_order(weak_matches)[:8],
         "ignored_theme_keywords": _dedupe_keep_order(ignored_theme_matches)[:8],
         "ignored_company_keywords": _dedupe_keep_order(ignored_company_matches)[:8],
+        "ignored_earnings_keywords": _dedupe_keep_order(ignored_earnings_matches)[:8],
         "specific_earnings_keywords": _dedupe_keep_order(specific_earnings_matches)[:8],
         "low_importance_keywords": _dedupe_keep_order(low_matches)[:8],
         "negative_news_keywords": _dedupe_keep_order(negative_matches)[:8],
