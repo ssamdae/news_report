@@ -448,6 +448,8 @@ def _earnings_context_valid(
             continue
         if stock_name in title and keyword in title:
             return True
+        if _is_market_summary_title(title):
+            continue
         if _keyword_near_stock_name(body, stock_name, keyword):
             return True
         if _keyword_near_text(body, stock_name, keyword):
