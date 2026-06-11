@@ -755,6 +755,28 @@ def _format_keyword_text(keywords: list[Any], limit: int = 3) -> str:
     return "·".join(cleaned[:limit])
 
 
+def _pattern_phrase(
+    day5_avg: float | None,
+    day5_win: float | None,
+    signal_count: int,
+) -> str:
+    parts: list[str] = []
+    if day5_avg is not None and day5_avg >= 5:
+        parts.append(f"과거 D+5 평균 {_format_pattern_pct(day5_avg, show_sign=True)}")
+    if day5_win is not None and day5_win >= 70:
+        parts.append(f"상승확률 {_format_pattern_pct(day5_win)}")
+    if signal_count >= 15:
+        parts.append(f"반복 출현 {signal_count}회")
+    if not parts:
+        if day5_win is not None and day5_win >= 60:
+            parts.append(f"과거 D+5 상승확률 {_format_pattern_pct(day5_win)}")
+        elif day5_avg is not None and day5_avg > 0:
+            parts.append(f"과거 D+5 평균 {_format_pattern_pct(day5_avg, show_sign=True)}")
+        elif signal_count > 0:
+            parts.append(f"과거 출현 {signal_count}회")
+    return "와 ".join(parts[:2])
+
+
 def _commentary_score_breakdown(analysis: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     detail = _investment_detail(analysis.get("investment_grade_detail"))
     breakdown = detail.get("score_breakdown") or {}
@@ -778,6 +800,7 @@ def _build_stock_commentary(
     analysis: dict[str, Any],
     signal: dict[str, Any],
     pattern_stats: dict[str, Any],
+    related_news_count: int = 0,
 ) -> dict[str, str]:
     breakdown, debug = _commentary_score_breakdown(analysis)
     news_score = _safe_float(breakdown.get("news")) or 0
@@ -801,6 +824,7 @@ def _build_stock_commentary(
     day5_avg = _safe_float(pattern_stats.get("day5_avg_return"))
     day5_win = _safe_float(pattern_stats.get("day5_win_rate"))
     signal_count = _safe_int(pattern_stats.get("signal_count"))
+    pattern_phrase = _pattern_phrase(day5_avg, day5_win, signal_count)
 
     day5_avg_text = (
         _format_pattern_pct(day5_avg, show_sign=True)
@@ -827,7 +851,16 @@ def _build_stock_commentary(
 
     if grade == "D" or investment_score < 50:
         summary = f"{stock_name}은 현재 점수와 등급 기준상 단기 우선순위가 낮은 편입니다."
-        if day5_avg is not None and day5_avg < 0:
+        if related_news_count > 0 and news_score <= 10:
+            positive = (
+                "개별 뉴스는 확인되지만, 투자등급 산식상 패턴·지식맵 점수 반영이 "
+                "제한적입니다."
+            )
+            risk = (
+                "관련 보도만으로 판단하기보다 과거 D+5 흐름과 점수 구성을 함께 보면 "
+                "후속 관찰 우선순위는 낮은 편입니다."
+            )
+        elif day5_avg is not None and day5_avg < 0:
             positive = "뚜렷한 뉴스 모멘텀이나 우호적인 과거 패턴은 제한적으로 확인됩니다."
             risk = (
                 "뉴스·패턴·지식맵 점수가 모두 낮고 과거 D+5 평균 흐름도 "
@@ -875,11 +908,31 @@ def _build_stock_commentary(
         and pattern_score >= 25
         and (day5_win is None or day5_win >= 60)
     ):
-        summary = (
-            f"당일 뉴스는 시황성·가격 반응 중심이나, 과거 패턴을 기준으로 "
-            f"{theme} 후속 흐름 지속 여부를 확인할 필요가 있습니다."
-        )
-        if day5_win is not None:
+        if day5_avg is not None and day5_avg >= 5 and day5_win is not None and day5_win >= 70:
+            summary = (
+                "뉴스 모멘텀은 가격 반응 중심으로 제한적이나, "
+                f"{pattern_phrase}가 함께 확인되어 패턴 기반 후속 흐름을 관찰할 만합니다."
+            )
+        elif day5_win is not None and day5_win >= 70:
+            summary = (
+                "당일 뉴스는 시황성 기사 중심이나, "
+                f"과거 D+5 상승확률 {day5_win_text}가 높아 "
+                f"{theme} 후속 흐름 지속 여부를 확인할 필요가 있습니다."
+            )
+        elif signal_count >= 15:
+            summary = (
+                "당일 개별 뉴스 모멘텀은 제한적이나, "
+                f"과거 500억봉 반복 출현 {signal_count}회가 확인되어 "
+                f"{theme} 테마 확산 여부를 함께 점검할 수 있습니다."
+            )
+        else:
+            summary = (
+                f"당일 뉴스는 시황성·가격 반응 중심이나, 과거 패턴을 기준으로 "
+                f"{theme} 후속 흐름 지속 여부를 확인할 필요가 있습니다."
+            )
+        if pattern_phrase:
+            positive = f"{pattern_phrase}가 확인되어 패턴 관점의 참고 가치는 있습니다."
+        elif day5_win is not None:
             positive = (
                 f"과거 D+5 상승확률 {day5_win_text}가 확인되어 "
                 "패턴 관점의 참고 가치는 있습니다."
@@ -895,8 +948,9 @@ def _build_stock_commentary(
         and day5_avg is not None
         and day5_avg > 0
     ):
+        phrase = pattern_phrase or f"과거 D+5 평균 {day5_avg_text}"
         summary = (
-            f"뉴스 모멘텀은 제한적이나 과거 D+5 평균 {day5_avg_text} 흐름이 "
+            f"뉴스 모멘텀은 제한적이나 {phrase}가 "
             "양호해 패턴 기반 후속 흐름을 관찰할 만합니다."
         )
         if day5_win is not None:
@@ -1119,6 +1173,112 @@ def _top_pick_text(
         else:
             lines.append(stripped)
     return "\n".join(lines[:3]) or value
+
+
+def _leading_theme_stock_names(theme_rankings: list[dict[str, Any]]) -> set[str]:
+    names: set[str] = set()
+    for theme_row in (theme_rankings or [])[:2]:
+        leader = theme_row.get("leader")
+        if leader:
+            names.add(str(leader))
+        for stock_name in theme_row.get("stocks") or []:
+            if stock_name:
+                names.add(str(stock_name))
+        for stock_name in theme_row.get("followers") or []:
+            if stock_name:
+                names.add(str(stock_name))
+    return names
+
+
+def _top_pick_names_for_news(
+    analyses: list[dict[str, Any]],
+    theme_rankings: list[dict[str, Any]],
+) -> set[str]:
+    leading_names = _leading_theme_stock_names(theme_rankings)
+    ranked: list[tuple[Any, ...]] = []
+    for analysis in analyses:
+        stock_name = _text(analysis.get("stock_name"))
+        grade = _text(analysis.get("investment_grade"))
+        investment_score = _safe_float(analysis.get("investment_score"))
+        if stock_name == "-" or investment_score is None or grade == "D":
+            continue
+        detail = _investment_detail(analysis.get("investment_grade_detail"))
+        breakdown = detail.get("score_breakdown") or {}
+        pattern_stats = _pattern_stats_from_analysis(analysis)
+        ranked.append(
+            (
+                1 if stock_name in leading_names else 0,
+                investment_score,
+                _safe_float(analysis.get("confidence_score")) or 0,
+                _safe_float(pattern_stats.get("day5_avg_return")) or -999,
+                int(pattern_stats.get("signal_count") or 0),
+                int(breakdown.get("news") or 0),
+                stock_name,
+            )
+        )
+    ranked.sort(reverse=True)
+    return {row[-1] for row in ranked[:3]}
+
+
+def _rank_global_news_for_pdf(
+    news_items: list[dict[str, Any]],
+    analyses_by_stock: dict[str, dict[str, Any]],
+    theme_rankings: list[dict[str, Any]],
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    leading_names = _leading_theme_stock_names(theme_rankings)
+    top_pick_names = _top_pick_names_for_news(
+        list(analyses_by_stock.values()),
+        theme_rankings,
+    )
+    grade_bonus = {"A": 40, "B": 25, "C": 5, "D": -30}
+    seen_by_stock: dict[str, int] = {}
+    scored_rows: list[tuple[float, dict[str, Any]]] = []
+
+    for row in news_items:
+        stock_name = _text(row.get("stock_name"))
+        analysis = analyses_by_stock.get(stock_name, {})
+        detail = _investment_detail(analysis.get("investment_grade_detail"))
+        breakdown = detail.get("score_breakdown") or {}
+        debug = detail.get("debug") or {}
+        grade = _text(analysis.get("investment_grade"))
+        investment_score = _safe_float(analysis.get("investment_score")) or 0
+        news_types = {str(value) for value in _as_list(debug.get("news_types"))}
+        important_keywords = _as_list(debug.get("important_news_keywords"))
+        raw_score = _safe_float(row.get("relevance_score")) or 0
+
+        rank_score = raw_score
+        rank_score += investment_score * 0.8
+        rank_score += grade_bonus.get(grade, 0)
+        if stock_name in top_pick_names:
+            rank_score += 35
+        if stock_name in leading_names:
+            rank_score += 15
+        if important_keywords:
+            rank_score += 18
+        if "PRICE_ONLY" in news_types:
+            rank_score -= 25
+        if grade == "D":
+            rank_score -= 50
+        if int(breakdown.get("news") or 0) <= 5:
+            rank_score -= 10
+
+        repeated_count = seen_by_stock.get(stock_name, 0)
+        if repeated_count:
+            rank_score -= repeated_count * 25
+        seen_by_stock[stock_name] = repeated_count + 1
+
+        scored_rows.append((rank_score, row))
+
+    scored_rows.sort(
+        key=lambda item: (
+            item[0],
+            _safe_float(item[1].get("relevance_score")) or 0,
+            str(item[1].get("published_at") or ""),
+        ),
+        reverse=True,
+    )
+    return [row for _score, row in scored_rows[:limit]]
 
 
 def _load_daily_theme_analysis(report_date: date) -> dict[str, Any] | None:
@@ -1460,7 +1620,13 @@ def generate_daily_report(report_date: date) -> Path:
         for row in signals
         if row.get("stock_name") in analyses_by_stock
     ]
-    news = _load_relevant_news(report_date, limit=5)
+    news = _load_relevant_news(report_date, limit=40)
+    ranked_news = _rank_global_news_for_pdf(
+        news,
+        analyses_by_stock,
+        theme_rankings,
+        limit=5,
+    )
 
     doc = SimpleDocTemplate(
         str(output_path),
@@ -1543,6 +1709,11 @@ def generate_daily_report(report_date: date) -> Path:
                 pattern_stats = get_stock_pattern_stats(stock_name)
             title = f"{stock_name} / 대표테마: {_text(signal.get('primary_theme'))}"
             story.append(Paragraph(title, styles["stock_heading"]))
+            stock_news = get_stock_news_for_report(
+                stock_name=stock_name,
+                report_date=report_date,
+                limit=3,
+            )
 
             if analysis is None:
                 _add_report_section(story, "투자등급", "분석 전", styles)
@@ -1565,7 +1736,12 @@ def generate_daily_report(report_date: date) -> Path:
                     styles,
                 )
             else:
-                comments = _build_stock_commentary(analysis, signal, pattern_stats)
+                comments = _build_stock_commentary(
+                    analysis,
+                    signal,
+                    pattern_stats,
+                    related_news_count=len(stock_news),
+                )
                 for column, label in (
                     ("summary", "한줄 요약"),
                     ("investment_grade", "투자등급"),
@@ -1598,11 +1774,6 @@ def generate_daily_report(report_date: date) -> Path:
                     _add_report_section(story, label, value, styles)
 
             story.append(Paragraph("관련 뉴스", styles["heading"]))
-            stock_news = get_stock_news_for_report(
-                stock_name=stock_name,
-                report_date=report_date,
-                limit=3,
-            )
             if stock_news:
                 _add_news_cards(story, stock_news, styles)
             else:
@@ -1613,8 +1784,8 @@ def generate_daily_report(report_date: date) -> Path:
 
     story.append(PageBreak())
     story.append(Paragraph("전체 주요 뉴스", styles["heading"]))
-    if news:
-        _add_news_cards(story, news, styles)
+    if ranked_news:
+        _add_news_cards(story, ranked_news, styles)
     else:
         story.append(_paragraph("관련 뉴스가 없습니다.", styles["body"]))
 
