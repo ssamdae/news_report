@@ -670,7 +670,7 @@ def _investment_notice_text() -> str:
     return (
         "본 리포트는 뉴스, 지식맵, 과거 패턴통계를 종합한 참고 자료입니다. "
         "투자 판단 전 공시, 실적, 수급, 시장 변동성을 함께 확인해야 하며 "
-        "매수·매도 추천을 의미하지 않습니다."
+        "특정 거래 판단을 의미하지 않습니다."
     )
 
 
@@ -714,6 +714,241 @@ def _investment_section_text(analysis: dict[str, Any]) -> str:
         lines.append("주요 이유")
         lines.extend(f"- {reason}" for reason in reasons[:4])
     return "\n".join(lines)
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    number = _safe_float(value)
+    if number is None:
+        return default
+    return int(number)
+
+
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            return parsed
+        if isinstance(parsed, dict):
+            return list(parsed.values())
+        return [part.strip() for part in text.split(",") if part.strip()]
+    return [value]
+
+
+def _format_keyword_text(keywords: list[Any], limit: int = 3) -> str:
+    cleaned = []
+    for keyword in keywords:
+        text = str(keyword).strip()
+        if text and text not in cleaned:
+            cleaned.append(text)
+    return "·".join(cleaned[:limit])
+
+
+def _commentary_score_breakdown(analysis: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    detail = _investment_detail(analysis.get("investment_grade_detail"))
+    breakdown = detail.get("score_breakdown") or {}
+    if isinstance(breakdown, str):
+        try:
+            parsed = json.loads(breakdown)
+        except json.JSONDecodeError:
+            parsed = {}
+        breakdown = parsed if isinstance(parsed, dict) else {}
+    debug = detail.get("debug") or {}
+    if isinstance(debug, str):
+        try:
+            parsed_debug = json.loads(debug)
+        except json.JSONDecodeError:
+            parsed_debug = {}
+        debug = parsed_debug if isinstance(parsed_debug, dict) else {}
+    return breakdown, debug
+
+
+def _build_stock_commentary(
+    analysis: dict[str, Any],
+    signal: dict[str, Any],
+    pattern_stats: dict[str, Any],
+) -> dict[str, str]:
+    breakdown, debug = _commentary_score_breakdown(analysis)
+    news_score = _safe_float(breakdown.get("news")) or 0
+    pattern_score = _safe_float(breakdown.get("pattern")) or 0
+    knowledge_score = _safe_float(breakdown.get("knowledge")) or 0
+    investment_score = _safe_float(analysis.get("investment_score")) or 0
+    grade = _text(analysis.get("investment_grade"))
+    stock_name = _text(analysis.get("stock_name"))
+    theme = _text(signal.get("primary_theme"))
+    if theme == "-":
+        theme = _text(analysis.get("theme_points"))
+    if theme == "-":
+        theme = "관련 테마"
+
+    important_keywords = _as_list(
+        debug.get("important_news_keywords")
+        or analysis.get("important_news_keywords")
+    )
+    news_types = {str(value) for value in _as_list(debug.get("news_types"))}
+    keyword_text = _format_keyword_text(important_keywords)
+    day5_avg = _safe_float(pattern_stats.get("day5_avg_return"))
+    day5_win = _safe_float(pattern_stats.get("day5_win_rate"))
+    signal_count = _safe_int(pattern_stats.get("signal_count"))
+
+    day5_avg_text = (
+        _format_pattern_pct(day5_avg, show_sign=True)
+        if day5_avg is not None
+        else "-"
+    )
+    day5_win_text = _format_pattern_pct(day5_win) if day5_win is not None else "-"
+
+    summary = (
+        f"{stock_name}은 금일 점수 구성과 {theme} 흐름을 함께 참고해 "
+        "후속 흐름을 점검할 필요가 있습니다."
+    )
+    positive = (
+        "관련 뉴스와 과거 패턴을 함께 확인하며 거래대금 지속 여부를 "
+        "점검할 필요가 있습니다."
+    )
+    risk = (
+        "단기 가격 반응만으로 판단하기보다 실제 공시, 실적, 수급 흐름과 "
+        "함께 교차 확인이 필요합니다."
+    )
+    tomorrow_check = (
+        "장 시작 전 추가 공시, 관련 테마 뉴스, 거래대금 지속 여부를 확인하세요."
+    )
+
+    if grade == "D" or investment_score < 50:
+        summary = f"{stock_name}은 현재 점수와 등급 기준상 단기 우선순위가 낮은 편입니다."
+        if day5_avg is not None and day5_avg < 0:
+            positive = "뚜렷한 뉴스 모멘텀이나 우호적인 과거 패턴은 제한적으로 확인됩니다."
+            risk = (
+                "뉴스·패턴·지식맵 점수가 모두 낮고 과거 D+5 평균 흐름도 "
+                "부진해 후속 관찰 우선순위는 낮습니다."
+            )
+        else:
+            positive = "일부 가격 반응은 확인되지만, 뚜렷한 개별 모멘텀은 아직 제한적입니다."
+            risk = (
+                "등급과 점수 구성이 약해 테마 확산이나 추가 뉴스 확인 전까지는 "
+                "참고 관점에서 보는 것이 적절합니다."
+            )
+        tomorrow_check = "개별 공시, 거래대금 회복, 테마 내 상대 강도 개선 여부를 확인하세요."
+
+    elif (
+        news_score >= 20
+        and pattern_score >= 35
+        and day5_avg is not None
+        and day5_avg > 0
+        and (day5_win is None or day5_win >= 55)
+    ):
+        if keyword_text:
+            summary = (
+                f"{keyword_text} 뉴스 모멘텀과 과거 D+5 평균 {day5_avg_text}가 "
+                f"함께 확인되어 {theme} 내 주도 흐름 여부를 관찰할 만합니다."
+            )
+            positive = (
+                f"{keyword_text} 관련 뉴스와 과거 패턴 점수가 동시에 양호해 "
+                "금일 관심도가 높은 종목으로 분류됩니다."
+            )
+        else:
+            summary = (
+                f"뉴스 점수와 과거 D+5 평균 {day5_avg_text} 흐름이 함께 확인되어 "
+                f"{theme} 내 후속 흐름을 관찰할 만합니다."
+            )
+            positive = "뉴스 점수와 과거 패턴 점수가 함께 양호하게 확인됩니다."
+        risk = (
+            "단기 상승 이후에는 거래대금 둔화나 테마 순환 가능성이 있어 "
+            "후속 보도와 수급 지속 여부를 함께 확인해야 합니다."
+        )
+        tomorrow_check = f"{theme} 테마 지속 여부, 거래대금 유지, 관련 키워드 후속 보도를 점검하세요."
+
+    elif (
+        news_score <= 10
+        and "PRICE_ONLY" in news_types
+        and pattern_score >= 25
+        and (day5_win is None or day5_win >= 60)
+    ):
+        summary = (
+            f"당일 뉴스는 시황성·가격 반응 중심이나, 과거 패턴을 기준으로 "
+            f"{theme} 후속 흐름 지속 여부를 확인할 필요가 있습니다."
+        )
+        if day5_win is not None:
+            positive = (
+                f"과거 D+5 상승확률 {day5_win_text}가 확인되어 "
+                "패턴 관점의 참고 가치는 있습니다."
+            )
+        else:
+            positive = "가격 반응 중심의 뉴스가 확인되며, 패턴 관점에서 후속 흐름을 점검할 수 있습니다."
+        risk = "시황성 기사와 개별 종목 모멘텀을 구분해 볼 필요가 있습니다."
+        tomorrow_check = "개별 종목 뉴스 발생 여부와 거래대금 유지 여부를 우선 확인하세요."
+
+    elif (
+        news_score <= 10
+        and pattern_score >= 35
+        and day5_avg is not None
+        and day5_avg > 0
+    ):
+        summary = (
+            f"뉴스 모멘텀은 제한적이나 과거 D+5 평균 {day5_avg_text} 흐름이 "
+            "양호해 패턴 기반 후속 흐름을 관찰할 만합니다."
+        )
+        if day5_win is not None:
+            positive = (
+                f"과거 D+5 상승확률 {day5_win_text}와 패턴 점수가 양호해 "
+                "단기 통계 관점에서 참고할 만합니다."
+            )
+        else:
+            positive = "뉴스보다 과거 500억봉 이후의 패턴 통계가 상대적으로 양호합니다."
+        risk = (
+            "개별 뉴스 모멘텀이 약하므로 테마 확산 없이 가격 반응만 이어질 경우 "
+            "변동성이 커질 수 있습니다."
+        )
+        tomorrow_check = "가격 반응보다 거래대금 지속 여부와 테마 내 후속주 확산 여부를 확인하세요."
+
+    elif knowledge_score >= 20 and news_score <= 10:
+        summary = f"지식맵상 {theme} 연관성은 확인되지만, 당일 뉴스 모멘텀은 제한적입니다."
+        positive = (
+            f"기존 PDF 지식맵 기준으로 {theme} 관련성이 확인되어 "
+            "테마 확산 시 함께 점검할 수 있습니다."
+        )
+        risk = "당일 개별 뉴스가 약하므로 테마 전체 흐름에 의존하는 성격이 강할 수 있습니다."
+        tomorrow_check = f"{theme} 내 대장주 흐름과 후속 뉴스 발생 여부를 확인하세요."
+
+    elif news_score >= 20:
+        if keyword_text:
+            summary = f"{keyword_text} 관련 뉴스 모멘텀이 확인되어 후속 보도 여부를 관찰할 필요가 있습니다."
+            positive = f"{keyword_text} 키워드가 중요 뉴스로 확인되어 단기 관심도는 유지되고 있습니다."
+        else:
+            summary = "뉴스 점수가 양호해 개별 모멘텀 지속 여부를 점검할 필요가 있습니다."
+            positive = "중요 뉴스 유형이 확인되어 후속 보도와 거래대금 흐름을 함께 볼 필요가 있습니다."
+        risk = "뉴스 모멘텀이 가격에 선반영되었을 가능성이 있어 장중 거래대금 지속 여부 확인이 필요합니다."
+        tomorrow_check = "후속 기사, 공시, 거래대금 유지 여부를 확인하세요."
+
+    elif signal_count >= 10 and day5_avg is not None and day5_avg > 0:
+        summary = (
+            f"과거 500억봉 출현 {signal_count}회와 D+5 평균 {day5_avg_text}가 "
+            "확인되어 패턴 기반 관찰 대상으로 분류됩니다."
+        )
+        positive = (
+            f"뉴스 모멘텀은 강하지 않지만 과거 D+5 상승확률 {day5_win_text}를 "
+            "함께 참고할 수 있습니다."
+        )
+        risk = "뉴스 동력이 약한 구간에서는 거래대금 둔화 시 후속 흐름이 빠르게 약해질 수 있습니다."
+        tomorrow_check = "거래대금 지속 여부와 같은 테마 내 강한 종목과의 상대 흐름을 점검하세요."
+
+    return {
+        "summary": summary,
+        "positive": positive,
+        "risk": risk,
+        "tomorrow_check": tomorrow_check,
+    }
 
 
 def _pending_analysis_text(report_date: date, stock_name: str) -> str:
@@ -1330,6 +1565,7 @@ def generate_daily_report(report_date: date) -> Path:
                     styles,
                 )
             else:
+                comments = _build_stock_commentary(analysis, signal, pattern_stats)
                 for column, label in (
                     ("summary", "한줄 요약"),
                     ("investment_grade", "투자등급"),
@@ -1340,6 +1576,8 @@ def generate_daily_report(report_date: date) -> Path:
                     ("tomorrow_checkpoints", "내일 체크"),
                 ):
                     value = analysis.get(column)
+                    if column == "summary":
+                        value = comments["summary"]
                     if column == "investment_grade":
                         value = _investment_section_text(analysis)
                     if column == "knowledge_points":
@@ -1351,6 +1589,12 @@ def generate_daily_report(report_date: date) -> Path:
                         )
                     if column == "pattern_points":
                         value = _pattern_stats_text(pattern_stats, value)
+                    if column == "positive_points":
+                        value = comments["positive"]
+                    if column == "risk_points":
+                        value = comments["risk"]
+                    if column == "tomorrow_checkpoints":
+                        value = comments["tomorrow_check"]
                     _add_report_section(story, label, value, styles)
 
             story.append(Paragraph("관련 뉴스", styles["heading"]))
