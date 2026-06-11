@@ -174,16 +174,47 @@ MAJOR_COMPANY_KEYWORDS = {
     "삼성전자": 6,
     "SK하이닉스": 6,
     "엔비디아": 6,
+    "NVIDIA": 6,
     "TSMC": 6,
+    "마이크론": 6,
+    "브로드컴": 6,
+    "애플": 5,
+    "테슬라": 5,
+    "현대차": 5,
+    "LG에너지솔루션": 6,
 }
-MAJOR_COMPANY_CONNECTORS = {
+STRONG_COMPANY_RELATION_TERMS = {
     "공급",
+    "공급계약",
     "수주",
     "납품",
     "양산",
     "협력",
+    "파트너",
+    "고객사로",
+    "고객사에",
+    "고객사 공급",
     "밸류체인",
-    "공급계약",
+    "장비",
+    "소재",
+    "부품",
+    "테스트",
+    "검사",
+    "후공정",
+    "전공정",
+}
+MAJOR_COMPANY_ALLOWED_PRIMARY_THEME = {
+    "삼성전자": {"반도체", "AI/로봇", "이차전지", "전력"},
+    "SK하이닉스": {"반도체", "AI/로봇"},
+    "엔비디아": {"반도체", "AI/로봇", "전력"},
+    "NVIDIA": {"반도체", "AI/로봇", "전력"},
+    "TSMC": {"반도체"},
+    "마이크론": {"반도체"},
+    "브로드컴": {"반도체", "AI/로봇"},
+    "애플": {"반도체", "AI/로봇", "소비재"},
+    "테슬라": {"이차전지", "AI/로봇", "전력"},
+    "현대차": {"자동차", "이차전지", "AI/로봇"},
+    "LG에너지솔루션": {"이차전지"},
 }
 
 NEWS_KEYWORD_ALLOWED_PRIMARY_THEME = {
@@ -311,6 +342,22 @@ def _news_keyword_theme_allowed(
     }
 
 
+def _major_company_primary_theme_allowed(
+    keyword: str,
+    stock_primary_theme: str | None,
+) -> bool:
+    allowed_themes = MAJOR_COMPANY_ALLOWED_PRIMARY_THEME.get(keyword)
+    if not allowed_themes:
+        return True
+    primary_theme = normalize_primary_theme(stock_primary_theme)
+    if not primary_theme:
+        return False
+    return primary_theme in {
+        normalize_primary_theme(theme)
+        for theme in allowed_themes
+    }
+
+
 def _keyword_near_stock_name(text: str, stock_name: str, keyword: str, radius: int = 80) -> bool:
     if not stock_name or not keyword:
         return False
@@ -328,7 +375,6 @@ def _major_company_context_valid(
     keyword: str,
     stock_name: str | None,
     news_items: list[dict[str, Any]],
-    combined_text: str,
 ) -> bool:
     for item in news_items:
         title = str(item.get("title") or "")
@@ -341,7 +387,10 @@ def _major_company_context_valid(
             return True
         if stock_name and _keyword_near_stock_name(body, stock_name, keyword):
             return True
-        if keyword in item_text and any(connector in item_text for connector in MAJOR_COMPANY_CONNECTORS):
+        if keyword in item_text and any(
+            connector in item_text
+            for connector in STRONG_COMPANY_RELATION_TERMS
+        ):
             return True
     return False
 
@@ -490,6 +539,7 @@ def calculate_news_importance_score(
     negative_matches: list[str] = []
     weak_matches: list[str] = []
     ignored_theme_matches: list[str] = []
+    ignored_company_matches: list[str] = []
     specific_earnings_matches: list[str] = []
     news_types: set[str] = set()
     matched_titles: list[str] = []
@@ -546,8 +596,11 @@ def calculate_news_importance_score(
     for keyword, weight in MAJOR_COMPANY_KEYWORDS.items():
         if not _keyword_present(combined_text, keyword):
             continue
-        if not _major_company_context_valid(keyword, stock_name, news_items, combined_text):
-            weak_matches.append(keyword)
+        if not _major_company_primary_theme_allowed(keyword, stock_primary_theme):
+            ignored_company_matches.append(keyword)
+            continue
+        if not _major_company_context_valid(keyword, stock_name, news_items):
+            ignored_company_matches.append(keyword)
             continue
         if not keyword_allowed(keyword):
             continue
@@ -612,6 +665,7 @@ def calculate_news_importance_score(
         "important_news_keywords": important_keywords[:12],
         "weak_news_keywords": _dedupe_keep_order(weak_matches)[:8],
         "ignored_theme_keywords": _dedupe_keep_order(ignored_theme_matches)[:8],
+        "ignored_company_keywords": _dedupe_keep_order(ignored_company_matches)[:8],
         "specific_earnings_keywords": _dedupe_keep_order(specific_earnings_matches)[:8],
         "low_importance_keywords": _dedupe_keep_order(low_matches)[:8],
         "negative_news_keywords": _dedupe_keep_order(negative_matches)[:8],

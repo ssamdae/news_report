@@ -755,6 +755,10 @@ def test_investment_grade_command(stock_name: str) -> None:
         + ", ".join(debug.get("ignored_theme_keywords") or [])
     )
     print(
+        "ignored_company_keywords: "
+        + ", ".join(debug.get("ignored_company_keywords") or [])
+    )
+    print(
         "specific_earnings_keywords: "
         + ", ".join(debug.get("specific_earnings_keywords") or [])
     )
