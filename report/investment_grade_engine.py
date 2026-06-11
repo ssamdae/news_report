@@ -79,18 +79,11 @@ TOP_NEWS_KEYWORDS = {
 }
 
 MID_NEWS_KEYWORDS = {
-    "실적": 5,
     "영업이익": 6,
     "흑자전환": 7,
     "증설": 5,
-    "투자": 5,
     "공장": 4,
     "양산": 6,
-    "고객사": 5,
-    "삼성전자": 6,
-    "SK하이닉스": 6,
-    "엔비디아": 6,
-    "TSMC": 6,
     "로봇": 5,
     "휴머노이드": 7,
     "이차전지": 5,
@@ -149,6 +142,49 @@ BIO_TECH_KEYWORDS = {"기술수출", "라이선스아웃", "LO", "FDA", "임상"
 EARNINGS_KEYWORDS = {"실적", "영업이익", "흑자전환"}
 PRICE_ONLY_KEYWORDS = set(LOW_NEWS_KEYWORDS)
 RISK_KEYWORDS = set(NEGATIVE_KEYWORDS)
+WEAK_NEWS_KEYWORDS = {
+    "실적": 2,
+    "고객사": 2,
+    "투자": 2,
+}
+SPECIFIC_EARNINGS_KEYWORDS = {
+    "영업이익": 6,
+    "매출 증가": 5,
+    "매출액": 4,
+    "흑자전환": 7,
+    "어닝서프라이즈": 7,
+    "실적 개선": 5,
+    "분기 최대": 6,
+    "사상 최대": 7,
+    "컨센서스 상회": 6,
+}
+CUSTOMER_CONTEXT_KEYWORDS = {
+    "신규 고객사": 6,
+    "고객사 확대": 6,
+    "공급계약": 8,
+    "수주": 8,
+    "납품": 6,
+    "양산": 6,
+    "삼성전자 공급": 8,
+    "SK하이닉스 공급": 8,
+    "엔비디아 공급": 8,
+    "TSMC 공급": 8,
+}
+MAJOR_COMPANY_KEYWORDS = {
+    "삼성전자": 6,
+    "SK하이닉스": 6,
+    "엔비디아": 6,
+    "TSMC": 6,
+}
+MAJOR_COMPANY_CONNECTORS = {
+    "공급",
+    "수주",
+    "납품",
+    "양산",
+    "협력",
+    "밸류체인",
+    "공급계약",
+}
 
 
 def _to_float(value: Any) -> float | None:
@@ -191,6 +227,41 @@ def _keyword_present(text: str, keyword: str) -> bool:
 
 def _dedupe_keep_order(values: list[str]) -> list[str]:
     return list(dict.fromkeys(values))
+
+
+def _keyword_near_stock_name(text: str, stock_name: str, keyword: str, radius: int = 80) -> bool:
+    if not stock_name or not keyword:
+        return False
+    stock_index = text.find(stock_name)
+    while stock_index != -1:
+        start = max(0, stock_index - radius)
+        end = min(len(text), stock_index + len(stock_name) + radius)
+        if keyword in text[start:end]:
+            return True
+        stock_index = text.find(stock_name, stock_index + len(stock_name))
+    return False
+
+
+def _major_company_context_valid(
+    keyword: str,
+    stock_name: str | None,
+    news_items: list[dict[str, Any]],
+    combined_text: str,
+) -> bool:
+    for item in news_items:
+        title = str(item.get("title") or "")
+        body = " ".join(
+            str(item.get(key) or "")
+            for key in ("description", "ai_summary", "summary")
+        )
+        item_text = f"{title} {body}"
+        if stock_name and stock_name in title and keyword in title:
+            return True
+        if stock_name and _keyword_near_stock_name(body, stock_name, keyword):
+            return True
+        if keyword in item_text and any(connector in item_text for connector in MAJOR_COMPANY_CONNECTORS):
+            return True
+    return False
 
 
 def _knowledge_keywords(context: dict[str, Any]) -> list[str]:
@@ -322,6 +393,7 @@ def calculate_news_importance_score(
     news_items: list[dict[str, Any]] | None = None,
     news_text: str | None = None,
     ai_analysis_text: str | None = None,
+    stock_name: str | None = None,
 ) -> dict[str, Any]:
     news_items = news_items or []
     combined_parts = [news_text or "", ai_analysis_text or ""]
@@ -333,6 +405,8 @@ def calculate_news_importance_score(
     mid_matches: list[str] = []
     low_matches: list[str] = []
     negative_matches: list[str] = []
+    weak_matches: list[str] = []
+    specific_earnings_matches: list[str] = []
     news_types: set[str] = set()
     matched_titles: list[str] = []
 
@@ -353,6 +427,38 @@ def calculate_news_importance_score(
         if not _keyword_present(combined_text, keyword):
             continue
         mid_matches.append(keyword)
+        score += weight
+        add_titles_for_keyword(keyword)
+
+    for keyword, weight in SPECIFIC_EARNINGS_KEYWORDS.items():
+        if not _keyword_present(combined_text, keyword):
+            continue
+        specific_earnings_matches.append(keyword)
+        mid_matches.append(keyword)
+        score += weight
+        add_titles_for_keyword(keyword)
+
+    for keyword, weight in CUSTOMER_CONTEXT_KEYWORDS.items():
+        if not _keyword_present(combined_text, keyword):
+            continue
+        mid_matches.append(keyword)
+        score += weight
+        add_titles_for_keyword(keyword)
+
+    for keyword, weight in MAJOR_COMPANY_KEYWORDS.items():
+        if not _keyword_present(combined_text, keyword):
+            continue
+        if not _major_company_context_valid(keyword, stock_name, news_items, combined_text):
+            weak_matches.append(keyword)
+            continue
+        mid_matches.append(keyword)
+        score += weight
+        add_titles_for_keyword(keyword)
+
+    for keyword, weight in WEAK_NEWS_KEYWORDS.items():
+        if not _keyword_present(combined_text, keyword):
+            continue
+        weak_matches.append(keyword)
         score += weight
         add_titles_for_keyword(keyword)
 
@@ -379,7 +485,7 @@ def calculate_news_importance_score(
         news_types.add("TECH")
     if matched_positive & BIO_TECH_KEYWORDS:
         news_types.add("BIO_TECH")
-    if matched_positive & EARNINGS_KEYWORDS:
+    if set(specific_earnings_matches) & EARNINGS_KEYWORDS or specific_earnings_matches:
         news_types.add("EARNINGS")
     if low_matches and not top_matches and not mid_matches:
         news_types.add("PRICE_ONLY")
@@ -393,12 +499,19 @@ def calculate_news_importance_score(
         score = max(score, 12)
     if news_types == {"PRICE_ONLY"}:
         score = min(score, 5)
+    if news_types == {"EARNINGS"}:
+        score = min(score, 15 if specific_earnings_matches else 8)
+    elif not ({"TECH", "CONTRACT", "BIO_TECH", "POLICY"} & news_types):
+        if specific_earnings_matches:
+            score = min(score, 15)
 
     important_keywords = _dedupe_keep_order(top_matches + mid_matches)
     return {
         "score": int(_clamp(score, 0, 25)),
         "news_types": sorted(news_types),
         "important_news_keywords": important_keywords[:12],
+        "weak_news_keywords": _dedupe_keep_order(weak_matches)[:8],
+        "specific_earnings_keywords": _dedupe_keep_order(specific_earnings_matches)[:8],
         "low_importance_keywords": _dedupe_keep_order(low_matches)[:8],
         "negative_news_keywords": _dedupe_keep_order(negative_matches)[:8],
         "matched_news_titles": _dedupe_keep_order(matched_titles)[:5],
@@ -410,11 +523,13 @@ def _calculate_news_score(
     ai_analysis_text: str | None,
     reasons: list[str],
     news_items: list[dict[str, Any]] | None = None,
+    stock_name: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
     result = calculate_news_importance_score(
         news_items=news_items,
         news_text=news_text,
         ai_analysis_text=ai_analysis_text,
+        stock_name=stock_name,
     )
     important_keywords = result.get("important_news_keywords") or []
     negative_keywords = result.get("negative_news_keywords") or []
@@ -458,6 +573,7 @@ def calculate_investment_grade(
         ai_analysis_text,
         grade_reasons,
         news_items=news_items,
+        stock_name=stock_name,
     )
 
     total_score = round(
