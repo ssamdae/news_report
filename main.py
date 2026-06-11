@@ -4,13 +4,14 @@ import argparse
 import csv
 from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from database.db import test_connection
 
 
 def _parse_date(value: str | None) -> date:
     if value is None:
-        return date.today()
+        return datetime.now(ZoneInfo("Asia/Seoul")).date()
     return datetime.strptime(value, "%Y-%m-%d").date()
 
 
@@ -22,14 +23,12 @@ def _parse_float_list(value: str) -> list[float]:
     return [float(item.strip()) for item in value.split(",") if item.strip()]
 
 
-def run(target_date: date, limit_stocks: int | None = None) -> None:
-    from collector.news_collector import collect_news_for_signals
+def run(
+    target_date: date,
+    limit_stocks: int | None = None,
+    collect_news: bool = True,
+) -> None:
     from collector.stock_collector import collect_daily_stocks
-    from database.news_repository import (
-        apply_news_relevance_scores,
-        load_active_stock_keywords,
-        save_news_articles,
-    )
     from database.signal_event_repository import save_signal_events
     from database.stock_repository import save_daily_prices, save_stock_master
     from filter.signal_filter import filter_500eok_signal
@@ -50,6 +49,17 @@ def run(target_date: date, limit_stocks: int | None = None) -> None:
     print(f"stock_master 저장 완료: {stock_count}건")
     print(f"daily_price 저장 완료: {daily_price_count}건")
     print(f"signal_event 저장 완료: {signal_count}건")
+
+    if not collect_news:
+        print("뉴스 수집 건너뜀: --skip-news")
+        return
+
+    from collector.news_collector import collect_news_for_signals
+    from database.news_repository import (
+        apply_news_relevance_scores,
+        load_active_stock_keywords,
+        save_news_articles,
+    )
 
     print("뉴스 수집 시작")
     signal_stock_codes = signal_df["stock_code"].dropna().astype(str).tolist()
@@ -1069,7 +1079,7 @@ def build_pattern_stats_command() -> None:
 def _print_pipeline_failure(step_label: str, error: Exception) -> None:
     import traceback
 
-    print(f"{step_label} 실패: {error}")
+    print(f"[DailyReport][ERROR] step={step_label} message={error}")
     traceback.print_exc()
 
 
@@ -1077,6 +1087,9 @@ def run_daily_report_command(
     report_date: date,
     mock: bool = False,
     limit_stocks: int | None = None,
+    skip_news: bool = False,
+    skip_analysis: bool = False,
+    skip_report: bool = False,
 ) -> None:
     from database.pattern_repository import build_stock_pattern_stats
     from database.news_repository import (
@@ -1087,25 +1100,42 @@ def run_daily_report_command(
     from report.report_generator import generate_daily_report
 
     current_step = "준비"
+    output_path: Path | None = None
+    print(f"[DailyReport] date={report_date.isoformat()} mock={mock}")
+    if limit_stocks is not None:
+        print(f"[DailyReport] limit_stocks={limit_stocks}")
+    if skip_news or skip_analysis or skip_report:
+        skipped = []
+        if skip_news:
+            skipped.append("news")
+        if skip_analysis:
+            skipped.append("analysis")
+        if skip_report:
+            skipped.append("report")
+        print(f"[DailyReport] skip={','.join(skipped)}")
+
     try:
         current_step = "[1/6] 주가 수집 및 500억봉 탐지"
         print("[1/6] 주가 수집 및 500억봉 탐지 시작")
-        run(report_date, limit_stocks=limit_stocks)
+        run(report_date, limit_stocks=limit_stocks, collect_news=not skip_news)
         print("[1/6] 완료")
 
         current_step = "[2/6] 뉴스 요약"
-        print("[2/6] 뉴스 요약 시작")
-        news_summary_result = summarize_news_articles(
-            report_date=report_date,
-            limit=100,
-            mock=mock,
-        )
-        print(
-            "[2/6] 완료 "
-            f"(대상 {news_summary_result['target_count']}건, "
-            f"성공 {news_summary_result['success_count']}건, "
-            f"실패 {news_summary_result['error_count']}건)"
-        )
+        if skip_news:
+            print("[2/6] 뉴스 요약 건너뜀: --skip-news")
+        else:
+            print("[2/6] 뉴스 요약 시작")
+            news_summary_result = summarize_news_articles(
+                report_date=report_date,
+                limit=100,
+                mock=mock,
+            )
+            print(
+                "[2/6] 완료 "
+                f"(대상 {news_summary_result['target_count']}건, "
+                f"성공 {news_summary_result['success_count']}건, "
+                f"실패 {news_summary_result['error_count']}건)"
+            )
 
         current_step = "[3/6] 패턴 통계 갱신"
         print("[3/6] 패턴 통계 갱신 시작")
@@ -1117,43 +1147,55 @@ def run_daily_report_command(
         )
 
         current_step = "[4/6] 500억봉 종목 AI 분석"
-        print("[4/6] 500억봉 종목 AI 분석 시작")
-        signal_result = analyze_signal_event_stocks(
-            report_date=report_date,
-            limit_news=20,
-            mock=mock,
-        )
-        print(
-            "[4/6] 완료 "
-            f"(대상 {signal_result['target_count']}건, "
-            f"성공 {signal_result['success_count']}건, "
-            f"스킵 {signal_result['skip_count']}건, "
-            f"실패 {signal_result['error_count']}건)"
-        )
+        if skip_analysis:
+            print("[4/6] 500억봉 종목 AI 분석 건너뜀: --skip-analysis")
+        else:
+            print("[4/6] 500억봉 종목 AI 분석 시작")
+            signal_result = analyze_signal_event_stocks(
+                report_date=report_date,
+                limit_news=20,
+                mock=mock,
+            )
+            print(
+                "[4/6] 완료 "
+                f"(대상 {signal_result['target_count']}건, "
+                f"성공 {signal_result['success_count']}건, "
+                f"스킵 {signal_result['skip_count']}건, "
+                f"실패 {signal_result['error_count']}건)"
+            )
 
         current_step = "[5/6] 일일 테마 분석"
-        print("[5/6] 일일 테마 분석 시작")
-        theme_result = analyze_daily_themes(
-            report_date=report_date,
-            limit_news_per_stock=5,
-            mock=mock,
-        )
-        print(
-            "[5/6] 완료 "
-            f"(500억봉 {theme_result['source_stock_count']}건, "
-            f"뉴스 {theme_result['source_news_count']}건)"
-        )
+        if skip_analysis:
+            print("[5/6] 일일 테마 분석 건너뜀: --skip-analysis")
+        else:
+            print("[5/6] 일일 테마 분석 시작")
+            theme_result = analyze_daily_themes(
+                report_date=report_date,
+                limit_news_per_stock=5,
+                mock=mock,
+            )
+            print(
+                "[5/6] 완료 "
+                f"(500억봉 {theme_result['source_stock_count']}건, "
+                f"뉴스 {theme_result['source_news_count']}건)"
+            )
 
         current_step = "[6/6] PDF 생성"
-        print("[6/6] PDF 생성 시작")
-        output_path = generate_daily_report(report_date)
-        print(f"[6/6] 완료: {output_path}")
+        if skip_report:
+            print("[6/6] PDF 생성 건너뜀: --skip-report")
+        else:
+            print("[6/6] PDF 생성 시작")
+            output_path = generate_daily_report(report_date)
+            print(f"[6/6] 완료: {output_path}")
     except Exception as error:
         _print_pipeline_failure(current_step, error)
         raise SystemExit(1) from error
 
-    print("일일 리포트 생성 완료:")
-    print(output_path)
+    if output_path is not None:
+        print("일일 리포트 생성 완료:")
+        print(output_path)
+    else:
+        print("일일 리포트 파이프라인 완료: PDF 생성은 건너뛰었습니다.")
 
 
 def main() -> None:
@@ -1269,6 +1311,21 @@ def main() -> None:
         action="store_true",
         help="Print debug-only rows for commands that support it",
     )
+    parser.add_argument(
+        "--skip-news",
+        action="store_true",
+        help="Skip news collection and news summarization in run-daily-report",
+    )
+    parser.add_argument(
+        "--skip-analysis",
+        action="store_true",
+        help="Skip stock/theme AI analysis in run-daily-report",
+    )
+    parser.add_argument(
+        "--skip-report",
+        action="store_true",
+        help="Skip PDF generation in run-daily-report",
+    )
     args = parser.parse_args()
 
     if args.command == "test-db":
@@ -1310,12 +1367,13 @@ def main() -> None:
         return
 
     if args.command == "run-daily-report":
-        if not args.date:
-            parser.error("run-daily-report requires --date")
         run_daily_report_command(
             report_date=_parse_date(args.date),
             mock=args.mock,
             limit_stocks=args.limit_stocks,
+            skip_news=args.skip_news,
+            skip_analysis=args.skip_analysis,
+            skip_report=args.skip_report,
         )
         return
 
