@@ -746,6 +746,18 @@ def test_investment_grade_command(stock_name: str) -> None:
         "important_news_keywords: "
         + ", ".join(debug.get("important_news_keywords") or [])
     )
+    print(
+        "weak_news_keywords: "
+        + ", ".join(debug.get("weak_news_keywords") or [])
+    )
+    print(
+        "ignored_theme_keywords: "
+        + ", ".join(debug.get("ignored_theme_keywords") or [])
+    )
+    print(
+        "specific_earnings_keywords: "
+        + ", ".join(debug.get("specific_earnings_keywords") or [])
+    )
     matched_titles = debug.get("matched_news_titles") or []
     if matched_titles:
         print("matched_news_titles:")

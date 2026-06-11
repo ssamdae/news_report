@@ -186,6 +186,50 @@ MAJOR_COMPANY_CONNECTORS = {
     "공급계약",
 }
 
+NEWS_KEYWORD_ALLOWED_PRIMARY_THEME = {
+    "HBM": {"반도체"},
+    "AI반도체": {"반도체", "AI/로봇"},
+    "AI 메모리": {"반도체", "AI/로봇"},
+    "AI메모리": {"반도체", "AI/로봇"},
+    "SOCAMM": {"반도체", "AI/로봇"},
+    "데이터센터": {"반도체", "AI/로봇", "전력"},
+    "반도체장비": {"반도체"},
+    "반도체 장비": {"반도체"},
+    "유리기판": {"반도체"},
+    "전력반도체": {"반도체", "전력"},
+    "이차전지": {"이차전지"},
+    "2차전지": {"이차전지"},
+    "2차 전지": {"이차전지"},
+    "전해액": {"이차전지"},
+    "전고체": {"이차전지"},
+    "ESS": {"이차전지", "전력"},
+    "리튬": {"이차전지"},
+    "로봇": {"AI/로봇"},
+    "휴머노이드": {"AI/로봇"},
+    "산업용로봇": {"AI/로봇"},
+    "스마트팩토리": {"AI/로봇", "반도체"},
+    "ADC": {"바이오"},
+    "기술수출": {"바이오"},
+    "라이선스아웃": {"바이오"},
+    "특허": {"바이오", "반도체", "AI/로봇"},
+    "물질특허": {"바이오"},
+    "FDA": {"바이오"},
+    "임상": {"바이오"},
+    "승인": {"바이오"},
+    "방산": {"방산", "우주항공", "개별주"},
+    "우주항공": {"우주항공", "방산", "개별주"},
+    "원전": {"원전", "전력", "개별주"},
+    "전력기기": {"전력"},
+    "전력망": {"전력"},
+}
+
+NEWS_KEYWORD_ALIASES = {
+    "AI 메모리": "AI메모리",
+    "반도체 장비": "반도체장비",
+    "2차전지": "이차전지",
+    "2차 전지": "이차전지",
+}
+
 
 def _to_float(value: Any) -> float | None:
     if value is None:
@@ -227,6 +271,44 @@ def _keyword_present(text: str, keyword: str) -> bool:
 
 def _dedupe_keep_order(values: list[str]) -> list[str]:
     return list(dict.fromkeys(values))
+
+
+def normalize_primary_theme(theme: Any) -> str:
+    text = str(theme or "").strip()
+    compact = text.replace(" ", "")
+    if compact in {"AI로봇", "로봇", "AI/로봇"}:
+        return "AI/로봇"
+    if compact in {"2차전지", "2차전지소재", "이차전지"}:
+        return "이차전지"
+    if compact in {"제약바이오", "바이오"}:
+        return "바이오"
+    if compact in {"반도체장비"}:
+        return "반도체"
+    return text
+
+
+def _normalize_news_keyword(keyword: str) -> str:
+    return NEWS_KEYWORD_ALIASES.get(keyword, keyword)
+
+
+def _news_keyword_theme_allowed(
+    keyword: str,
+    stock_primary_theme: str | None,
+) -> bool:
+    normalized_keyword = _normalize_news_keyword(keyword)
+    allowed_themes = (
+        NEWS_KEYWORD_ALLOWED_PRIMARY_THEME.get(keyword)
+        or NEWS_KEYWORD_ALLOWED_PRIMARY_THEME.get(normalized_keyword)
+    )
+    if not allowed_themes:
+        return True
+    primary_theme = normalize_primary_theme(stock_primary_theme)
+    if not primary_theme:
+        return False
+    return primary_theme in {
+        normalize_primary_theme(theme)
+        for theme in allowed_themes
+    }
 
 
 def _keyword_near_stock_name(text: str, stock_name: str, keyword: str, radius: int = 80) -> bool:
@@ -394,6 +476,7 @@ def calculate_news_importance_score(
     news_text: str | None = None,
     ai_analysis_text: str | None = None,
     stock_name: str | None = None,
+    stock_primary_theme: str | None = None,
 ) -> dict[str, Any]:
     news_items = news_items or []
     combined_parts = [news_text or "", ai_analysis_text or ""]
@@ -406,6 +489,7 @@ def calculate_news_importance_score(
     low_matches: list[str] = []
     negative_matches: list[str] = []
     weak_matches: list[str] = []
+    ignored_theme_matches: list[str] = []
     specific_earnings_matches: list[str] = []
     news_types: set[str] = set()
     matched_titles: list[str] = []
@@ -416,8 +500,16 @@ def calculate_news_importance_score(
             if title and _keyword_present(_news_item_text(item), keyword):
                 matched_titles.append(title)
 
+    def keyword_allowed(keyword: str) -> bool:
+        if _news_keyword_theme_allowed(keyword, stock_primary_theme):
+            return True
+        ignored_theme_matches.append(_normalize_news_keyword(keyword))
+        return False
+
     for keyword, weight in TOP_NEWS_KEYWORDS.items():
         if not _keyword_present(combined_text, keyword):
+            continue
+        if not keyword_allowed(keyword):
             continue
         top_matches.append(keyword)
         score += weight
@@ -426,12 +518,16 @@ def calculate_news_importance_score(
     for keyword, weight in MID_NEWS_KEYWORDS.items():
         if not _keyword_present(combined_text, keyword):
             continue
+        if not keyword_allowed(keyword):
+            continue
         mid_matches.append(keyword)
         score += weight
         add_titles_for_keyword(keyword)
 
     for keyword, weight in SPECIFIC_EARNINGS_KEYWORDS.items():
         if not _keyword_present(combined_text, keyword):
+            continue
+        if not keyword_allowed(keyword):
             continue
         specific_earnings_matches.append(keyword)
         mid_matches.append(keyword)
@@ -440,6 +536,8 @@ def calculate_news_importance_score(
 
     for keyword, weight in CUSTOMER_CONTEXT_KEYWORDS.items():
         if not _keyword_present(combined_text, keyword):
+            continue
+        if not keyword_allowed(keyword):
             continue
         mid_matches.append(keyword)
         score += weight
@@ -450,6 +548,8 @@ def calculate_news_importance_score(
             continue
         if not _major_company_context_valid(keyword, stock_name, news_items, combined_text):
             weak_matches.append(keyword)
+            continue
+        if not keyword_allowed(keyword):
             continue
         mid_matches.append(keyword)
         score += weight
@@ -511,6 +611,7 @@ def calculate_news_importance_score(
         "news_types": sorted(news_types),
         "important_news_keywords": important_keywords[:12],
         "weak_news_keywords": _dedupe_keep_order(weak_matches)[:8],
+        "ignored_theme_keywords": _dedupe_keep_order(ignored_theme_matches)[:8],
         "specific_earnings_keywords": _dedupe_keep_order(specific_earnings_matches)[:8],
         "low_importance_keywords": _dedupe_keep_order(low_matches)[:8],
         "negative_news_keywords": _dedupe_keep_order(negative_matches)[:8],
@@ -524,12 +625,14 @@ def _calculate_news_score(
     reasons: list[str],
     news_items: list[dict[str, Any]] | None = None,
     stock_name: str | None = None,
+    stock_primary_theme: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
     result = calculate_news_importance_score(
         news_items=news_items,
         news_text=news_text,
         ai_analysis_text=ai_analysis_text,
         stock_name=stock_name,
+        stock_primary_theme=stock_primary_theme,
     )
     important_keywords = result.get("important_news_keywords") or []
     negative_keywords = result.get("negative_news_keywords") or []
@@ -574,6 +677,7 @@ def calculate_investment_grade(
         grade_reasons,
         news_items=news_items,
         stock_name=stock_name,
+        stock_primary_theme=context.get("primary_theme"),
     )
 
     total_score = round(
