@@ -480,3 +480,27 @@ CREATE INDEX IF NOT EXISTS idx_stock_analysis_analysis_day_stock
 
 CREATE INDEX IF NOT EXISTS idx_daily_theme_analysis_report_date
     ON daily_theme_analysis (report_date DESC);
+
+CREATE TABLE IF NOT EXISTS report_stock_snapshot (
+    id BIGSERIAL PRIMARY KEY,
+    report_date DATE NOT NULL,
+    stock_code TEXT,
+    stock_name TEXT NOT NULL,
+    snapshot_data JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (report_date, stock_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_report_stock_snapshot_date
+    ON report_stock_snapshot (report_date);
+
+CREATE TABLE IF NOT EXISTS report_snapshot_meta (
+    report_date DATE PRIMARY KEY,
+    snapshot_version TEXT NOT NULL DEFAULT 'v1',
+    source_mode TEXT NOT NULL DEFAULT 'generated',
+    stock_count INTEGER NOT NULL DEFAULT 0,
+    generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    note TEXT
+);

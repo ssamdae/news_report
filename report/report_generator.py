@@ -1590,7 +1590,112 @@ def _add_separator(story: list[Any]) -> None:
     )
 
 
-def generate_daily_report(report_date: date) -> Path:
+def _snapshot_rows_from_inputs(
+    report_date: date,
+    signals: list[dict[str, Any]],
+    analyses_by_stock: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for signal in signals:
+        stock_name = _text(signal.get("stock_name"))
+        analysis = analyses_by_stock.get(stock_name)
+        pattern_stats = _pattern_stats_from_analysis(analysis)
+        if int(pattern_stats.get("signal_count") or 0) <= 0:
+            pattern_stats = get_stock_pattern_stats(stock_name)
+        related_news = get_stock_news_for_report(
+            stock_name=stock_name,
+            report_date=report_date,
+            limit=3,
+        )
+
+        comments = (
+            _build_stock_commentary(
+                analysis,
+                signal,
+                pattern_stats,
+                related_news_count=len(related_news),
+            )
+            if analysis
+            else {}
+        )
+        knowledge_map = _knowledge_map_text(
+            stock_name,
+            signal,
+            analysis or {},
+            pattern_stats,
+        )
+
+        rows.append(
+            {
+                "report_date": report_date,
+                "stock_code": signal.get("stock_code"),
+                "stock_name": stock_name,
+                "primary_theme": signal.get("primary_theme"),
+                "trade_amount": signal.get("trading_value"),
+                "signal": signal,
+                "analysis": analysis,
+                "pattern_stats": pattern_stats,
+                "knowledge_map_text": knowledge_map,
+                "comments": comments,
+                "related_news": related_news,
+                "investment_score": (analysis or {}).get("investment_score"),
+                "investment_grade": (analysis or {}).get("investment_grade"),
+                "investment_grade_detail": (analysis or {}).get(
+                    "investment_grade_detail"
+                ),
+                "day5_avg_return": pattern_stats.get("day5_avg_return"),
+                "day5_win_rate": pattern_stats.get("day5_win_rate"),
+                "day3_avg_return": pattern_stats.get("day3_avg_return"),
+                "day3_win_rate": pattern_stats.get("day3_win_rate"),
+                "next_day_avg_return": pattern_stats.get("next_day_avg_return"),
+                "next_day_win_rate": pattern_stats.get("next_day_win_rate"),
+                "signal_count": pattern_stats.get("signal_count"),
+                "source_signal_count": pattern_stats.get("source_signal_count"),
+                "source_pdf_count": pattern_stats.get("source_pdf_count"),
+                "summary": comments.get("summary"),
+                "positive_factors": comments.get("positive"),
+                "risk_factors": comments.get("risk"),
+                "tomorrow_check": comments.get("tomorrow_check"),
+            }
+        )
+    return rows
+
+
+def _restore_report_inputs_from_snapshots(
+    snapshot_rows: list[dict[str, Any]],
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+]:
+    signals: list[dict[str, Any]] = []
+    analyses: list[dict[str, Any]] = []
+    snapshot_by_stock: dict[str, dict[str, Any]] = {}
+
+    for row in snapshot_rows:
+        stock_name = _text(row.get("stock_name"))
+        signal = row.get("signal") or {}
+        if signal:
+            signals.append(signal)
+        analysis = row.get("analysis")
+        if isinstance(analysis, dict):
+            analyses.append(analysis)
+        snapshot_by_stock[stock_name] = row
+
+    analyses_by_stock = {
+        _text(row.get("stock_name")): row
+        for row in analyses
+        if _text(row.get("stock_name")) != "-"
+    }
+    return signals, analyses, analyses_by_stock, snapshot_by_stock
+
+
+def generate_daily_report(
+    report_date: date,
+    use_snapshot: bool = True,
+    refresh_snapshot: bool = False,
+) -> Path:
     from reportlab.lib.pagesizes import A4
     from reportlab.platypus import (
         KeepTogether,
@@ -1598,6 +1703,11 @@ def generate_daily_report(report_date: date) -> Path:
         Paragraph,
         SimpleDocTemplate,
         Spacer,
+    )
+    from database.report_snapshot_repository import (
+        ensure_report_snapshot_tables,
+        get_report_stock_snapshots,
+        upsert_report_stock_snapshots,
     )
 
     font_name, bold_font_name = _register_korean_font()
@@ -1609,18 +1719,58 @@ def generate_daily_report(report_date: date) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"daily_report_{report_date.isoformat()}.pdf"
 
+    snapshot_by_stock: dict[str, dict[str, Any]] = {}
+    if use_snapshot:
+        ensure_report_snapshot_tables()
+
+    snapshot_rows: list[dict[str, Any]] = []
+    if use_snapshot and not refresh_snapshot:
+        snapshot_rows = get_report_stock_snapshots(report_date)
+
     daily_theme = _load_daily_theme_analysis(report_date) or {}
-    signals = _load_signal_events(report_date)
-    analyses = _load_stock_analyses(report_date)
+    if snapshot_rows:
+        print(
+            "[ReportSnapshot] 기존 snapshot 사용: "
+            f"{report_date.isoformat()}, {len(snapshot_rows)} rows"
+        )
+        signals, analyses, analyses_by_stock, snapshot_by_stock = (
+            _restore_report_inputs_from_snapshots(snapshot_rows)
+        )
+    else:
+        signals = _load_signal_events(report_date)
+        analyses = _load_stock_analyses(report_date)
+        analyses_by_stock = {row["stock_name"]: row for row in analyses}
+        if use_snapshot:
+            snapshot_rows = _snapshot_rows_from_inputs(
+                report_date,
+                signals,
+                analyses_by_stock,
+            )
+            saved_count = upsert_report_stock_snapshots(report_date, snapshot_rows)
+            print(
+                "[ReportSnapshot] snapshot 저장: "
+                f"{report_date.isoformat()}, {saved_count} rows"
+            )
+            snapshot_by_stock = {
+                _text(row.get("stock_name")): row
+                for row in snapshot_rows
+            }
+
     theme_rankings = build_theme_rankings(report_date)
     subtheme_rankings = build_subtheme_rankings(report_date)
-    analyses_by_stock = {row["stock_name"]: row for row in analyses}
     signal_analyses = [
         analyses_by_stock[row["stock_name"]]
         for row in signals
         if row.get("stock_name") in analyses_by_stock
     ]
-    news = _load_relevant_news(report_date, limit=40)
+    if snapshot_by_stock:
+        news = [
+            news_row
+            for snapshot in snapshot_by_stock.values()
+            for news_row in (snapshot.get("related_news") or [])
+        ]
+    else:
+        news = _load_relevant_news(report_date, limit=40)
     ranked_news = _rank_global_news_for_pdf(
         news,
         analyses_by_stock,
@@ -1704,23 +1854,31 @@ def generate_daily_report(report_date: date) -> Path:
             _add_separator(story)
             stock_name = _text(signal.get("stock_name"))
             analysis = analyses_by_stock.get(stock_name)
-            pattern_stats = _pattern_stats_from_analysis(analysis)
+            snapshot_row = snapshot_by_stock.get(stock_name, {})
+            pattern_stats = (
+                snapshot_row.get("pattern_stats")
+                if isinstance(snapshot_row.get("pattern_stats"), dict)
+                else _pattern_stats_from_analysis(analysis)
+            )
             if int(pattern_stats.get("signal_count") or 0) <= 0:
                 pattern_stats = get_stock_pattern_stats(stock_name)
             title = f"{stock_name} / 대표테마: {_text(signal.get('primary_theme'))}"
             story.append(Paragraph(title, styles["stock_heading"]))
-            stock_news = get_stock_news_for_report(
-                stock_name=stock_name,
-                report_date=report_date,
-                limit=3,
-            )
+            stock_news = snapshot_row.get("related_news") or []
+            if not stock_news:
+                stock_news = get_stock_news_for_report(
+                    stock_name=stock_name,
+                    report_date=report_date,
+                    limit=3,
+                )
 
             if analysis is None:
                 _add_report_section(story, "투자등급", "분석 전", styles)
                 _add_report_section(
                     story,
                     "지식맵 해석",
-                    _knowledge_map_text(stock_name, signal, {}, pattern_stats),
+                    snapshot_row.get("knowledge_map_text")
+                    or _knowledge_map_text(stock_name, signal, {}, pattern_stats),
                     styles,
                 )
                 _add_report_section(
@@ -1736,12 +1894,14 @@ def generate_daily_report(report_date: date) -> Path:
                     styles,
                 )
             else:
-                comments = _build_stock_commentary(
-                    analysis,
-                    signal,
-                    pattern_stats,
-                    related_news_count=len(stock_news),
-                )
+                comments = snapshot_row.get("comments") or {}
+                if not comments:
+                    comments = _build_stock_commentary(
+                        analysis,
+                        signal,
+                        pattern_stats,
+                        related_news_count=len(stock_news),
+                    )
                 for column, label in (
                     ("summary", "한줄 요약"),
                     ("investment_grade", "투자등급"),
@@ -1757,11 +1917,14 @@ def generate_daily_report(report_date: date) -> Path:
                     if column == "investment_grade":
                         value = _investment_section_text(analysis)
                     if column == "knowledge_points":
-                        value = _knowledge_map_text(
-                            stock_name,
-                            signal,
-                            analysis,
-                            pattern_stats,
+                        value = (
+                            snapshot_row.get("knowledge_map_text")
+                            or _knowledge_map_text(
+                                stock_name,
+                                signal,
+                                analysis,
+                                pattern_stats,
+                            )
                         )
                     if column == "pattern_points":
                         value = _pattern_stats_text(pattern_stats, value)

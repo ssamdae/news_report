@@ -1060,10 +1060,18 @@ def summarize_news_command(
             print(f"- {row['id']} {row['title']}: {row['error']}")
 
 
-def generate_report_command(report_date: date) -> None:
+def generate_report_command(
+    report_date: date,
+    use_snapshot: bool = True,
+    refresh_snapshot: bool = False,
+) -> None:
     from report.report_generator import generate_daily_report
 
-    output_path = generate_daily_report(report_date)
+    output_path = generate_daily_report(
+        report_date,
+        use_snapshot=use_snapshot,
+        refresh_snapshot=refresh_snapshot,
+    )
     print("PDF 생성 완료:")
     print(output_path)
 
@@ -1090,6 +1098,8 @@ def run_daily_report_command(
     skip_news: bool = False,
     skip_analysis: bool = False,
     skip_report: bool = False,
+    use_snapshot: bool = True,
+    refresh_snapshot: bool = False,
 ) -> None:
     from database.pattern_repository import build_stock_pattern_stats
     from database.news_repository import (
@@ -1113,6 +1123,10 @@ def run_daily_report_command(
         if skip_report:
             skipped.append("report")
         print(f"[DailyReport] skip={','.join(skipped)}")
+    if not use_snapshot:
+        print("[DailyReport] report_snapshot=disabled")
+    elif refresh_snapshot:
+        print("[DailyReport] report_snapshot=refresh")
 
     try:
         current_step = "[1/6] 주가 수집 및 500억봉 탐지"
@@ -1185,7 +1199,11 @@ def run_daily_report_command(
             print("[6/6] PDF 생성 건너뜀: --skip-report")
         else:
             print("[6/6] PDF 생성 시작")
-            output_path = generate_daily_report(report_date)
+            output_path = generate_daily_report(
+                report_date,
+                use_snapshot=use_snapshot,
+                refresh_snapshot=refresh_snapshot,
+            )
             print(f"[6/6] 완료: {output_path}")
     except Exception as error:
         _print_pipeline_failure(current_step, error)
@@ -1326,6 +1344,16 @@ def main() -> None:
         action="store_true",
         help="Skip PDF generation in run-daily-report",
     )
+    parser.add_argument(
+        "--refresh-snapshot",
+        action="store_true",
+        help="Rebuild and overwrite report snapshot for the target date",
+    )
+    parser.add_argument(
+        "--no-snapshot",
+        action="store_true",
+        help="Generate report without reading or writing report snapshot",
+    )
     args = parser.parse_args()
 
     if args.command == "test-db":
@@ -1374,6 +1402,8 @@ def main() -> None:
             skip_news=args.skip_news,
             skip_analysis=args.skip_analysis,
             skip_report=args.skip_report,
+            use_snapshot=not args.no_snapshot,
+            refresh_snapshot=args.refresh_snapshot,
         )
         return
 
@@ -1528,7 +1558,11 @@ def main() -> None:
     if args.command == "generate-report":
         if not args.date:
             parser.error("generate-report requires --date")
-        generate_report_command(_parse_date(args.date))
+        generate_report_command(
+            _parse_date(args.date),
+            use_snapshot=not args.no_snapshot,
+            refresh_snapshot=args.refresh_snapshot,
+        )
         return
 
     print("Stock research system scaffold")
