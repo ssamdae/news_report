@@ -1076,6 +1076,85 @@ def generate_report_command(
     print(output_path)
 
 
+def _tail_text(path: str | None, line_count: int = 20, max_chars: int = 1200) -> str:
+    if not path:
+        return ""
+    log_path = Path(path)
+    if not log_path.exists():
+        return ""
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        return ""
+    text = "\n".join(lines[-line_count:])
+    if len(text) > max_chars:
+        return "..." + text[-max_chars:]
+    return text
+
+
+def notify_report_command(
+    report_date: date,
+    status: str,
+    pdf_path: str | None = None,
+    log_path: str | None = None,
+    exit_code: int | None = None,
+    message: str | None = None,
+    send_pdf: bool = False,
+) -> None:
+    from notifier.telegram_notifier import (
+        send_telegram_document,
+        send_telegram_message,
+    )
+
+    status = status.lower().strip()
+    if status not in {"success", "failed"}:
+        raise ValueError("--status must be success or failed")
+
+    if status == "success":
+        lines = [
+            "✅ 500억봉 일일 리포트 생성 완료",
+            "",
+            f"날짜: {report_date.isoformat()}",
+        ]
+        if pdf_path:
+            lines.append(f"PDF: {pdf_path}")
+        if log_path:
+            lines.append(f"로그: {log_path}")
+        if send_pdf and pdf_path and not Path(pdf_path).exists():
+            lines.append("")
+            lines.append("⚠️ PDF 파일을 찾을 수 없습니다.")
+        if message:
+            lines.extend(["", message])
+        notification_text = "\n".join(lines)
+        send_telegram_message(notification_text)
+
+        if send_pdf and pdf_path and Path(pdf_path).exists():
+            send_telegram_document(
+                pdf_path,
+                caption=f"500억봉 일일 리포트 {report_date.isoformat()}",
+            )
+        return
+
+    lines = [
+        "❌ 500억봉 일일 리포트 생성 실패",
+        "",
+        f"날짜: {report_date.isoformat()}",
+        f"exit_code: {exit_code if exit_code is not None else '-'}",
+    ]
+    if log_path:
+        lines.append(f"로그: {log_path}")
+    if message:
+        lines.extend(["", message])
+
+    tail = _tail_text(log_path)
+    if tail:
+        lines.extend(["", "최근 로그:", tail])
+    else:
+        lines.extend(["", "최근 로그를 확인하세요."])
+
+    send_telegram_message("\n".join(lines))
+
+
 def build_pattern_stats_command() -> None:
     from database.pattern_repository import build_stock_pattern_stats
 
@@ -1227,6 +1306,19 @@ def main() -> None:
     parser.add_argument("--stock-code", help="Stock code for collect-news command")
     parser.add_argument("--stock-name", help="Stock name for collect-news command")
     parser.add_argument(
+        "--status",
+        choices=["success", "failed"],
+        help="Notification status for notify-report",
+    )
+    parser.add_argument("--pdf-path", help="PDF path for notify-report")
+    parser.add_argument("--log-path", help="Log file path for notify-report")
+    parser.add_argument(
+        "--exit-code",
+        type=int,
+        help="Pipeline exit code for notify-report",
+    )
+    parser.add_argument("--message", help="Additional message for notify-report")
+    parser.add_argument(
         "--max-terms",
         type=int,
         default=10,
@@ -1354,6 +1446,11 @@ def main() -> None:
         action="store_true",
         help="Generate report without reading or writing report snapshot",
     )
+    parser.add_argument(
+        "--send-pdf",
+        action="store_true",
+        help="Send PDF document for notify-report success notifications",
+    )
     args = parser.parse_args()
 
     if args.command == "test-db":
@@ -1404,6 +1501,22 @@ def main() -> None:
             skip_report=args.skip_report,
             use_snapshot=not args.no_snapshot,
             refresh_snapshot=args.refresh_snapshot,
+        )
+        return
+
+    if args.command == "notify-report":
+        if not args.date:
+            parser.error("notify-report requires --date")
+        if not args.status:
+            parser.error("notify-report requires --status")
+        notify_report_command(
+            report_date=_parse_date(args.date),
+            status=args.status,
+            pdf_path=args.pdf_path,
+            log_path=args.log_path,
+            exit_code=args.exit_code,
+            message=args.message,
+            send_pdf=args.send_pdf,
         )
         return
 

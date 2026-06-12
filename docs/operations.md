@@ -95,6 +95,45 @@ grep -i "error\|ERROR\|Traceback\|failed\|실패" logs/daily_report_$(date +%Y-%
 스크립트는 시작 시각, 종료 시각, 실행 명령, exit code를 화면과 로그에 함께 남깁니다.
 Python은 unbuffered 모드로 실행되므로 `[DailyReport]` 단계별 로그도 바로 확인할 수 있습니다.
 
+## 텔레그램 알림 설정
+
+`.env`에 아래 값을 추가합니다. 실제 토큰과 채팅방 ID는 Git에 올리지 않습니다.
+
+```env
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+```
+
+알림 설정이 비어 있으면 알림 단계는 건너뛰고 로그에 skip 사유를 남깁니다.
+
+## 알림 테스트
+
+메시지 전송 테스트:
+
+```bash
+python3 main.py notify-report --date YYYY-MM-DD --status success --pdf-path reports/YYYY-MM-DD/daily_report_YYYY-MM-DD.pdf --log-path logs/daily_report_YYYY-MM-DD.log
+```
+
+PDF 포함 알림 테스트:
+
+```bash
+python3 main.py notify-report --date YYYY-MM-DD --status success --pdf-path reports/YYYY-MM-DD/daily_report_YYYY-MM-DD.pdf --log-path logs/daily_report_YYYY-MM-DD.log --send-pdf
+```
+
+실패 알림 테스트:
+
+```bash
+python3 main.py notify-report --date YYYY-MM-DD --status failed --exit-code 1 --log-path logs/daily_report_YYYY-MM-DD.log
+```
+
+운영 스크립트 알림 정책:
+
+- `--skip-report`가 있으면 알림을 보내지 않습니다.
+- PDF 생성 성공 시 성공 메시지를 보냅니다.
+- 운영 스크립트는 성공 알림에서 기본적으로 `--send-pdf`를 사용합니다.
+- 실패 시 exit code와 로그 경로를 포함한 실패 메시지를 보냅니다.
+- 알림 실패는 리포트 생성 실패로 취급하지 않으며, 최종 exit code는 리포트 실행 결과를 유지합니다.
+
 ## PDF 위치
 
 PDF는 날짜별 폴더에 생성됩니다.

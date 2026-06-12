@@ -7,6 +7,26 @@ PYTHON_BIN="${NEWS_REPORT_PYTHON:-${PROJECT_DIR}/venv/bin/python3}"
 LOG_DIR="${PROJECT_DIR}/logs"
 RUN_DATE="$(date +%Y-%m-%d)"
 LOG_FILE="${LOG_DIR}/daily_report_${RUN_DATE}.log"
+REPORT_DATE="${RUN_DATE}"
+SKIP_REPORT=false
+
+previous_arg=""
+for arg in "$@"; do
+  if [ "${previous_arg}" = "--date" ]; then
+    REPORT_DATE="${arg}"
+    previous_arg=""
+    continue
+  fi
+  case "${arg}" in
+    --date=*)
+      REPORT_DATE="${arg#--date=}"
+      ;;
+    --skip-report)
+      SKIP_REPORT=true
+      ;;
+  esac
+  previous_arg="${arg}"
+done
 
 mkdir -p "${LOG_DIR}"
 
@@ -48,6 +68,37 @@ set +e
 PYTHONUNBUFFERED=1 "${CMD[@]}" 2>&1 | tee -a "${LOG_FILE}"
 EXIT_CODE=${PIPESTATUS[0]}
 set -e
+
+if [ "${SKIP_REPORT}" = true ]; then
+  log "[run_daily_report] notify skipped: --skip-report"
+else
+  PDF_PATH="reports/${REPORT_DATE}/daily_report_${REPORT_DATE}.pdf"
+  if [ "${EXIT_CODE}" -eq 0 ]; then
+    NOTIFY_CMD=(
+      "${PYTHON_BIN}" -u main.py notify-report
+      --date "${REPORT_DATE}"
+      --status success
+      --pdf-path "${PDF_PATH}"
+      --log-path "${LOG_FILE}"
+      --send-pdf
+    )
+  else
+    NOTIFY_CMD=(
+      "${PYTHON_BIN}" -u main.py notify-report
+      --date "${REPORT_DATE}"
+      --status failed
+      --exit-code "${EXIT_CODE}"
+      --log-path "${LOG_FILE}"
+    )
+  fi
+
+  log "[run_daily_report] notify_command: ${NOTIFY_CMD[*]}"
+  set +e
+  PYTHONUNBUFFERED=1 "${NOTIFY_CMD[@]}" 2>&1 | tee -a "${LOG_FILE}"
+  NOTIFY_EXIT_CODE=${PIPESTATUS[0]}
+  set -e
+  log "[run_daily_report] notify_exit_code: ${NOTIFY_EXIT_CODE}"
+fi
 
 log "[run_daily_report] exit_code: ${EXIT_CODE}"
 log "[run_daily_report] end: $(date '+%Y-%m-%d %H:%M:%S')"
