@@ -17,10 +17,12 @@ python3 main.py generate-report --date 2026-06-09
 ## 스크립트 실행
 
 운영 스크립트는 프로젝트 루트, `.env`, venv python, 로그 경로를 자동 처리합니다.
+스크립트 실행 중 출력은 터미널에 즉시 표시되고, 동일한 내용이 로그 파일에도 저장됩니다.
 
 ```bash
 chmod +x scripts/run_daily_report.sh
 
+scripts/run_daily_report.sh --date 2026-06-09 --mock --limit-stocks 20 --skip-news --skip-analysis --skip-report
 scripts/run_daily_report.sh --date 2026-06-09 --mock --skip-news --skip-analysis --skip-report
 scripts/run_daily_report.sh --date 2026-06-09 --mock --skip-news
 scripts/run_daily_report.sh
@@ -78,13 +80,20 @@ ls -lh logs | tail
 tail -120 logs/daily_report_$(date +%Y-%m-%d).log
 ```
 
+실시간 로그:
+
+```bash
+tail -f logs/daily_report_$(date +%Y-%m-%d).log
+```
+
 에러 검색:
 
 ```bash
 grep -i "error\|ERROR\|Traceback\|failed\|실패" logs/daily_report_$(date +%Y-%m-%d).log
 ```
 
-스크립트는 시작 시각, 종료 시각, 실행 명령, exit code를 로그에 남깁니다.
+스크립트는 시작 시각, 종료 시각, 실행 명령, exit code를 화면과 로그에 함께 남깁니다.
+Python은 unbuffered 모드로 실행되므로 `[DailyReport]` 단계별 로그도 바로 확인할 수 있습니다.
 
 ## PDF 위치
 
