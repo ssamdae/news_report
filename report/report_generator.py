@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +67,19 @@ def _format_score(value: Any) -> str:
         return f"{float(value):.0f}"
     except (TypeError, ValueError):
         return str(value)
+
+
+def _format_daily_return_pct(value: Any) -> str:
+    if value is None:
+        return "-"
+    try:
+        number = Decimal(str(value)).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+        return f"{number:+.2f}%"
+    except Exception:
+        return "-"
 
 
 def _format_trading_value_eok(value: Any) -> str:
@@ -1311,10 +1325,30 @@ def _load_signal_events(report_date: date) -> list[dict[str, Any]]:
             se.trading_value,
             se.close_price,
             se.volume,
+            CASE
+                WHEN COALESCE(NULLIF(dp.prev_close_price, 0), prev_dp.close_price) > 0
+                    THEN (
+                        COALESCE(dp.close_price, se.close_price)
+                        - COALESCE(NULLIF(dp.prev_close_price, 0), prev_dp.close_price)
+                    ) / COALESCE(NULLIF(dp.prev_close_price, 0), prev_dp.close_price) * 100
+                ELSE NULL
+            END AS daily_return_pct,
             COALESCE(sp.primary_theme, '-') AS primary_theme
         FROM signal_event se
         JOIN stock_master sm
             ON sm.stock_code = se.stock_code
+        LEFT JOIN daily_price dp
+            ON dp.stock_code = se.stock_code
+            AND dp.trade_date = se.signal_date
+        LEFT JOIN LATERAL (
+            SELECT p.close_price
+            FROM daily_price p
+            WHERE p.stock_code = se.stock_code
+                AND p.trade_date < se.signal_date
+                AND p.close_price IS NOT NULL
+            ORDER BY p.trade_date DESC
+            LIMIT 1
+        ) prev_dp ON TRUE
         LEFT JOIN stock_profile sp
             ON sp.stock_name = sm.stock_name
         WHERE se.signal_date = %(report_date)s
@@ -1455,6 +1489,7 @@ def _build_signal_table(
             _paragraph("종목명", styles["table_header"]),
             _paragraph("투자점수", styles["table_header"]),
             _paragraph("거래대금", styles["table_header"]),
+            _paragraph("상승률", styles["table_header"]),
             _paragraph("대표테마", styles["table_header"]),
             _paragraph("D+5 평균", styles["table_header"]),
         ]
@@ -1476,6 +1511,10 @@ def _build_signal_table(
                     _format_trading_value_eok(row.get("trading_value")),
                     styles["small"],
                 ),
+                _paragraph(
+                    _format_daily_return_pct(row.get("daily_return_pct")),
+                    styles["small"],
+                ),
                 _paragraph(row.get("primary_theme"), styles["small"]),
                 _paragraph(
                     _format_pattern_pct(
@@ -1489,7 +1528,7 @@ def _build_signal_table(
 
     table = Table(
         table_rows,
-        colWidths=[24, 30, 72, 44, 62, 190, 48],
+        colWidths=[22, 28, 62, 40, 56, 44, 170, 46],
         repeatRows=1,
     )
     table.setStyle(
@@ -1597,7 +1636,9 @@ def _snapshot_rows_from_inputs(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for signal in signals:
+        signal = dict(signal)
         stock_name = _text(signal.get("stock_name"))
+        daily_return_pct = signal.get("daily_return_pct")
         analysis = analyses_by_stock.get(stock_name)
         pattern_stats = _pattern_stats_from_analysis(analysis)
         if int(pattern_stats.get("signal_count") or 0) <= 0:
@@ -1632,6 +1673,7 @@ def _snapshot_rows_from_inputs(
                 "stock_name": stock_name,
                 "primary_theme": signal.get("primary_theme"),
                 "trade_amount": signal.get("trading_value"),
+                "daily_return_pct": daily_return_pct,
                 "signal": signal,
                 "analysis": analysis,
                 "pattern_stats": pattern_stats,
@@ -1675,7 +1717,9 @@ def _restore_report_inputs_from_snapshots(
 
     for row in snapshot_rows:
         stock_name = _text(row.get("stock_name"))
-        signal = row.get("signal") or {}
+        signal = dict(row.get("signal") or {})
+        if "daily_return_pct" not in signal and row.get("daily_return_pct") is not None:
+            signal["daily_return_pct"] = row.get("daily_return_pct")
         if signal:
             signals.append(signal)
         analysis = row.get("analysis")
