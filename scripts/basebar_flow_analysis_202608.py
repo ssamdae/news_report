@@ -1,6 +1,6 @@
-"""Join August base bars with reclaim outcomes and summarize D0 investor flow.
+"""Join August base bars with D+10 intraday breakout evidence and D0 flow.
 
-Rates use all fully observed 10-session pattern outcomes. Pending rows stay visible.
+Daily OHLC cannot order the low relative to breakout; unknown stays unknown.
 """
 
 from __future__ import annotations
@@ -15,9 +15,11 @@ from pathlib import Path
 BASE = Path("output/basebar_202608_test.csv")
 PATH = Path("output/basebar_202608_reclaim.csv")
 OUTPUT = Path("output/basebar_202608_flow_joined.csv")
-RESOLVED = {"settled", "failed_first_reclaim", "no_pullback_within_horizon",
-            "no_reclaim_within_horizon"}
-PENDING = {"no_pullback_yet", "no_reclaim_yet", "awaiting_settlement"}
+CONFIRMED_HOLD = {"no_undercut_confirmed"}
+CONFIRMED_FAIL = {"undercut_confirmed", "no_pullback_within_horizon",
+                  "no_breakout_within_horizon"}
+UNKNOWN = {"intraday_order_unknown"}
+PENDING = {"no_pullback_yet", "no_breakout_yet"}
 OTHER = {"base_close_mismatch"}
 
 
@@ -58,7 +60,7 @@ def join(base: dict, paths: dict) -> list[dict]:
         if bar.get("investor_flow_status") != "ok":
             raise ValueError(f"Investor flow not complete: {key}")
         status = path["status"]
-        if status not in RESOLVED | PENDING | OTHER:
+        if status not in CONFIRMED_HOLD | CONFIRMED_FAIL | UNKNOWN | PENDING | OTHER:
             raise ValueError(f"Unknown path status: {key} {status}")
         if int(path["horizon_days"]) != 10:
             raise ValueError(f"Expected a D+10 outcome for {key}, got {path['horizon_days']}")
@@ -78,16 +80,23 @@ def summarize(rows: list[dict], label: str, group_by) -> None:
     groups: dict[str, Counter] = defaultdict(Counter)
     for row in rows:
         groups[group_by(row)][row["path_status"]] += 1
-    print(f"\n[{label}] group | total | settled | failed_reclaim | no_pattern_by_D10 | pending | settled/resolved")
+    print(f"\n[{label}] group | total | hold_confirmed | undercut_confirmed | "
+          "no_pattern_D10 | order_unknown | pending | hold_rate_bounds")
     for group in sorted(groups):
         counts = groups[group]
-        resolved = sum(counts[status] for status in RESOLVED)
+        observed = sum(counts[status] for status in CONFIRMED_HOLD | CONFIRMED_FAIL | UNKNOWN)
         pending = sum(counts[status] for status in PENDING)
-        no_pattern = counts["no_pullback_within_horizon"] + counts["no_reclaim_within_horizon"]
+        no_pattern = counts["no_pullback_within_horizon"] + counts["no_breakout_within_horizon"]
         total = sum(counts.values())
-        rate = f"{counts['settled'] / resolved * 100:.1f}%" if resolved else "n/a"
-        print(f"{group} | {total} | {counts['settled']} | "
-              f"{counts['failed_first_reclaim']} | {no_pattern} | {pending} | {rate}")
+        if observed:
+            lower = counts["no_undercut_confirmed"] / observed * 100
+            upper = (counts["no_undercut_confirmed"] + counts["intraday_order_unknown"]) / observed * 100
+            bounds = f"{lower:.1f}%~{upper:.1f}%"
+        else:
+            bounds = "n/a"
+        print(f"{group} | {total} | {counts['no_undercut_confirmed']} | "
+              f"{counts['undercut_confirmed']} | {no_pattern} | "
+              f"{counts['intraday_order_unknown']} | {pending} | {bounds}")
 
 
 def main() -> None:
@@ -109,8 +118,8 @@ def main() -> None:
     summarize(rows, "institution sign", lambda row:
               f"institution{sign(Decimal(row['institution_net']))}")
     print(f"\n[DONE] joined={len(rows)}, output={args.output}")
-    print("D+10 includes the tenth trading session; settlement uses the next three sessions.")
-    print("Rates exclude pending/mismatched rows; groups with small counts are exploratory.")
+    print("D+10 includes the tenth ticker trading session after D0.")
+    print("Daily OHLC cannot resolve intraday order; bounds exclude pending/mismatched rows.")
 
 
 if __name__ == "__main__":
