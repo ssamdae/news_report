@@ -1,6 +1,6 @@
 """Join August base bars with reclaim outcomes and summarize D0 investor flow.
 
-Rates use only resolved first-reclaim outcomes. Pending observations remain visible.
+Rates use all fully observed 10-session pattern outcomes. Pending rows stay visible.
 """
 
 from __future__ import annotations
@@ -15,9 +15,10 @@ from pathlib import Path
 BASE = Path("output/basebar_202608_test.csv")
 PATH = Path("output/basebar_202608_reclaim.csv")
 OUTPUT = Path("output/basebar_202608_flow_joined.csv")
-RESOLVED = {"settled", "failed_first_reclaim"}
+RESOLVED = {"settled", "failed_first_reclaim", "no_pullback_within_horizon",
+            "no_reclaim_within_horizon"}
 PENDING = {"no_pullback_yet", "no_reclaim_yet", "awaiting_settlement"}
-OTHER = {"no_pullback_within_horizon", "no_reclaim_within_horizon", "base_close_mismatch"}
+OTHER = {"base_close_mismatch"}
 
 
 def read_csv(path: Path, date_column: str) -> dict[tuple[str, str], dict]:
@@ -59,6 +60,8 @@ def join(base: dict, paths: dict) -> list[dict]:
         status = path["status"]
         if status not in RESOLVED | PENDING | OTHER:
             raise ValueError(f"Unknown path status: {key} {status}")
+        if int(path["horizon_days"]) != 10:
+            raise ValueError(f"Expected a D+10 outcome for {key}, got {path['horizon_days']}")
         value = Decimal(bar["trade_value"])
         if value <= 0:
             raise ValueError(f"Nonpositive trading value: {key}")
@@ -75,15 +78,16 @@ def summarize(rows: list[dict], label: str, group_by) -> None:
     groups: dict[str, Counter] = defaultdict(Counter)
     for row in rows:
         groups[group_by(row)][row["path_status"]] += 1
-    print(f"\n[{label}] group | total | settled | failed_first_reclaim | pending | settled/resolved")
+    print(f"\n[{label}] group | total | settled | failed_reclaim | no_pattern_by_D10 | pending | settled/resolved")
     for group in sorted(groups):
         counts = groups[group]
         resolved = sum(counts[status] for status in RESOLVED)
         pending = sum(counts[status] for status in PENDING)
+        no_pattern = counts["no_pullback_within_horizon"] + counts["no_reclaim_within_horizon"]
         total = sum(counts.values())
         rate = f"{counts['settled'] / resolved * 100:.1f}%" if resolved else "n/a"
         print(f"{group} | {total} | {counts['settled']} | "
-              f"{counts['failed_first_reclaim']} | {pending} | {rate}")
+              f"{counts['failed_first_reclaim']} | {no_pattern} | {pending} | {rate}")
 
 
 def main() -> None:
@@ -105,7 +109,8 @@ def main() -> None:
     summarize(rows, "institution sign", lambda row:
               f"institution{sign(Decimal(row['institution_net']))}")
     print(f"\n[DONE] joined={len(rows)}, output={args.output}")
-    print("Rates exclude pending observations; groups with small resolved counts are exploratory.")
+    print("D+10 includes the tenth trading session; settlement uses the next three sessions.")
+    print("Rates exclude pending/mismatched rows; groups with small counts are exploratory.")
 
 
 if __name__ == "__main__":
