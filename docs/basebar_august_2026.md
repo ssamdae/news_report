@@ -19,7 +19,7 @@ python scripts/basebar_scan_202608.py
 
 ## 눌림 → 기준봉 종가 재돌파 → 안착 실험
 
-기준봉 CSV를 확인한 뒤 다음 스크립트로 이후 가격 경로를 별도 산출합니다. KRX 계정 환경변수 `KRX_ID`와 `KRX_PW`는 첫 단계와 동일하게 필요합니다.
+기준봉 CSV를 확인한 뒤 다음 스크립트로 이후 가격 경로를 별도 산출합니다. 기본 가격 조회원은 프로젝트의 네이버 일봉 수집기이며, KRX 로그인이 필요하지 않습니다. 네이버 응답이 누락되면 완료된 CSV를 쓰지 않고 중단합니다. 원하면 `--provider pykrx`로 기존 KRX 일봉 조회를 명시적으로 선택할 수 있으며, 이 경우 `KRX_ID`와 `KRX_PW`가 필요합니다.
 
 ```bash
 python scripts/basebar_reclaim_202608.py
