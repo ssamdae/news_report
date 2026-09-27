@@ -142,7 +142,8 @@ def main() -> None:
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--through", default=datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d"))
-    parser.add_argument("--horizon", type=int, default=60)
+    parser.add_argument("--horizon", type=int, default=10,
+                        help="Maximum trading sessions from D0 to the first reclaim (default: 10)")
     parser.add_argument("--provider", choices=("naver", "pykrx"), default="naver")
     parser.add_argument("--pause", type=float, default=0.2)
     args = parser.parse_args()
