@@ -1,7 +1,7 @@
-"""Evaluate pullback -> base-close reclaim -> settlement for August 2026 bars.
+"""Find D+10 breakout days and classify what daily OHLC can establish.
 
 Uses the independently scanned CSV, never the production signal_event table.
-Outcomes without enough observed sessions remain pending rather than failed.
+An intraday recross cannot be inferred from an open/low/close sequence alone.
 """
 
 from __future__ import annotations
@@ -22,16 +22,17 @@ RESULT_COLUMNS = [
     "stock_code", "stock_name", "market", "signal_date", "base_close",
     "observed_through", "observed_days", "horizon_days", "status",
     "first_pullback_date", "days_to_pullback", "pullback_low_pct",
-    "reclaim_date", "days_to_reclaim", "settlement_above_days",
-    "settlement_observed_days", "settled_above_base_close",
+    "breakout_date", "days_to_breakout", "breakout_open", "breakout_high",
+    "breakout_low", "breakout_close",
 ]
 
 
 def evaluate_event(event: dict, history: list[dict], horizon: int) -> dict:
-    """A strict close-below pullback, later close-above reclaim, then 2/3 closes.
+    """After a close-below pullback, find first intraday high above C0 by D+10.
 
-    The breakout day does not count among the three settlement sessions.
-    Days are observed ticker trading sessions, indexed from D+1.
+    A full-day low at/above C0 confirms no undercut. A close below C0 or
+    open above followed by a low below confirms an undercut after breakout.
+    Other OHLC shapes need ordered intraday prices. D+1 is index 1.
     """
     signal = event["trade_date"]
     base_close = int(event["close"])
@@ -41,8 +42,8 @@ def evaluate_event(event: dict, history: list[dict], horizon: int) -> dict:
         "base_close": base_close, "observed_through": "", "observed_days": 0,
         "horizon_days": horizon, "status": "no_pullback_yet",
         "first_pullback_date": "", "days_to_pullback": "", "pullback_low_pct": "",
-        "reclaim_date": "", "days_to_reclaim": "", "settlement_above_days": "",
-        "settlement_observed_days": "", "settled_above_base_close": "",
+        "breakout_date": "", "days_to_breakout": "", "breakout_open": "",
+        "breakout_high": "", "breakout_low": "", "breakout_close": "",
     }
     by_date = {bar["date"]: bar for bar in history}
     if signal not in by_date or int(by_date[signal]["close"]) != base_close:
@@ -60,30 +61,31 @@ def evaluate_event(event: dict, history: list[dict], horizon: int) -> dict:
         return result
     result["first_pullback_date"] = future[pullback_idx]["date"]
     result["days_to_pullback"] = pullback_idx + 1
-    result["status"] = "no_reclaim_yet"
-    reclaim_idx = next(
-        (i for i in range(pullback_idx + 1, len(window)) if int(window[i]["close"]) > base_close),
+    result["status"] = "no_breakout_yet"
+    breakout_idx = next(
+        (i for i in range(pullback_idx + 1, len(window)) if int(window[i]["high"]) > base_close),
         None,
     )
-    trough_end = reclaim_idx if reclaim_idx is not None else len(window)
+    trough_end = breakout_idx if breakout_idx is not None else len(window)
     result["pullback_low_pct"] = round(
         (min(int(bar["low"]) for bar in window[:trough_end]) / base_close - 1) * 100, 2
     )
-    if reclaim_idx is None:
+    if breakout_idx is None:
         if len(window) >= horizon:
-            result["status"] = "no_reclaim_within_horizon"
+            result["status"] = "no_breakout_within_horizon"
         return result
-    result["reclaim_date"] = future[reclaim_idx]["date"]
-    result["days_to_reclaim"] = reclaim_idx + 1
-    settlement = future[reclaim_idx + 1 : reclaim_idx + 4]
-    result["settlement_observed_days"] = len(settlement)
-    result["settlement_above_days"] = sum(int(bar["close"]) > base_close for bar in settlement)
-    if len(settlement) < 3:
-        result["status"] = "awaiting_settlement"
-        return result
-    success = result["settlement_above_days"] >= 2
-    result["settled_above_base_close"] = success
-    result["status"] = "settled" if success else "failed_first_reclaim"
+    breakout = window[breakout_idx]
+    result.update({
+        "breakout_date": breakout["date"], "days_to_breakout": breakout_idx + 1,
+        "breakout_open": int(breakout["open"]), "breakout_high": int(breakout["high"]),
+        "breakout_low": int(breakout["low"]), "breakout_close": int(breakout["close"]),
+    })
+    if int(breakout["low"]) >= base_close:
+        result["status"] = "no_undercut_confirmed"
+    elif int(breakout["open"]) > base_close or int(breakout["close"]) < base_close:
+        result["status"] = "undercut_confirmed"
+    else:
+        result["status"] = "intraday_order_unknown"
     return result
 
 
@@ -104,10 +106,11 @@ def load_events(path: Path) -> list[dict]:
 
 def collect_history_pykrx(stock, ticker: str, first_date: str, through: str) -> list[dict]:
     frame = stock.get_market_ohlcv_by_date(first_date, through, ticker, adjusted=False)
-    if frame is None or frame.empty or not {"종가", "저가"}.issubset(frame.columns):
+    if frame is None or frame.empty or not {"시가", "고가", "종가", "저가"}.issubset(frame.columns):
         return []
     return [
-        {"date": day.strftime("%Y%m%d"), "close": int(bar["종가"]), "low": int(bar["저가"])}
+        {"date": day.strftime("%Y%m%d"), "open": int(bar["시가"]),
+         "high": int(bar["고가"]), "close": int(bar["종가"]), "low": int(bar["저가"])}
         for day, bar in frame.iterrows() if int(bar["종가"]) > 0 and int(bar["저가"]) > 0
     ]
 
@@ -129,9 +132,10 @@ def collect_history_naver(session, ticker: str, first_date: str, through: str) -
         parts = (item.get("data") or "").split("|")
         if len(parts) != 6:
             raise RuntimeError(f"Unexpected Naver price row for {ticker}")
-        day, _, _, low, close, _ = parts
+        day, open_price, high, low, close, _ = parts
         if first_date <= day <= through:
-            by_date[day] = {"date": day, "close": int(close), "low": int(low)}
+            by_date[day] = {"date": day, "open": int(open_price), "high": int(high),
+                            "close": int(close), "low": int(low)}
     if first_date not in by_date:
         raise RuntimeError(f"Naver chart history missing base date {first_date} for {ticker}")
     return [by_date[day] for day in sorted(by_date)]
@@ -143,7 +147,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--through", default=datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d"))
     parser.add_argument("--horizon", type=int, default=10,
-                        help="Maximum trading sessions from D0 to the first reclaim (default: 10)")
+                        help="Maximum trading sessions from D0 to first intraday breakout (default: 10)")
     parser.add_argument("--provider", choices=("naver", "pykrx"), default="naver")
     parser.add_argument("--pause", type=float, default=0.2)
     args = parser.parse_args()
@@ -151,8 +155,8 @@ def main() -> None:
         datetime.strptime(args.through, "%Y%m%d")
     except ValueError:
         parser.error("--through must be YYYYMMDD")
-    if args.horizon < 4:
-        parser.error("--horizon must be at least 4 sessions")
+    if args.horizon < 2:
+        parser.error("--horizon must be at least 2 sessions")
     if args.pause < 0:
         parser.error("--pause must be nonnegative")
     if args.through < "20260801":
