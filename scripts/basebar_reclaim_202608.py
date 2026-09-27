@@ -8,16 +8,12 @@ from __future__ import annotations
 
 import argparse
 import csv
-import sys
 import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
+from xml.etree import ElementTree
 from zoneinfo import ZoneInfo
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 DEFAULT_INPUT = Path("output/basebar_202608_test.csv")
@@ -116,34 +112,28 @@ def collect_history_pykrx(stock, ticker: str, first_date: str, through: str) -> 
     ]
 
 
-def collect_history_naver(session, ticker: str, first_date: str, through: str,
-                          pause: float = 0.2, max_pages: int = 30) -> list[dict]:
-    """Read descending Naver daily pages until the D0 session is reached."""
-    from collector.stock_collector import _fetch_naver_daily_page, _parse_naver_daily_rows
-
+def collect_history_naver(session, ticker: str, first_date: str, through: str) -> list[dict]:
+    """Read the Naver chart XML endpoint, with enough rows to include D0."""
     start = datetime.strptime(first_date, "%Y%m%d").date()
-    end = datetime.strptime(through, "%Y%m%d").date()
+    today = datetime.now(ZoneInfo("Asia/Seoul")).date()
+    count = min(6000, max(100, (today - start).days + 30))
+    response = session.get(
+        "https://fchart.stock.naver.com/sise.nhn",
+        params={"symbol": ticker, "timeframe": "day", "count": count, "requestType": "0"},
+        timeout=20,
+    )
+    response.raise_for_status()
+    root = ElementTree.fromstring(response.content.decode("euc-kr"))
     by_date = {}
-    reached_start = False
-    for page in range(1, max_pages + 1):
-        html = _fetch_naver_daily_page(session, ticker, page)
-        rows = _parse_naver_daily_rows(html, ticker)
-        if not rows:
-            raise RuntimeError(f"Naver returned no daily rows for {ticker} page={page}")
-        for row in rows:
-            day = row["trade_date"]
-            if start <= day <= end:
-                by_date[day] = {
-                    "date": day.strftime("%Y%m%d"),
-                    "close": int(row["close_price"]), "low": int(row["low_price"]),
-                }
-        if min(row["trade_date"] for row in rows) <= start:
-            reached_start = True
-            break
-        if pause:
-            time.sleep(pause)
-    if not reached_start:
-        raise RuntimeError(f"Naver history did not reach {first_date} for {ticker}")
+    for item in root.iter("item"):
+        parts = (item.get("data") or "").split("|")
+        if len(parts) != 6:
+            raise RuntimeError(f"Unexpected Naver price row for {ticker}")
+        day, _, _, low, close, _ = parts
+        if first_date <= day <= through:
+            by_date[day] = {"date": day, "close": int(close), "low": int(low)}
+    if first_date not in by_date:
+        raise RuntimeError(f"Naver chart history missing base date {first_date} for {ticker}")
     return [by_date[day] for day in sorted(by_date)]
 
 
@@ -176,15 +166,15 @@ def main() -> None:
         from pykrx import stock
         session = None
     else:
-        from collector.stock_collector import _build_session
+        import requests
         stock = None
-        session = _build_session()
+        session = requests.Session()
+        session.headers.update({"User-Agent": "Mozilla/5.0", "Accept": "application/xml,text/xml,*/*"})
     try:
         for i, (ticker, group) in enumerate(sorted(by_ticker.items()), start=1):
             first_date = min(row["trade_date"] for row in group)
             if args.provider == "naver":
-                history = collect_history_naver(session, ticker, first_date, args.through,
-                                                pause=args.pause)
+                history = collect_history_naver(session, ticker, first_date, args.through)
             else:
                 history = collect_history_pykrx(stock, ticker, first_date, args.through)
             if not history:
