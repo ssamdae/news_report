@@ -8,10 +8,16 @@ from __future__ import annotations
 
 import argparse
 import csv
+import sys
+import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 DEFAULT_INPUT = Path("output/basebar_202608_test.csv")
@@ -100,7 +106,7 @@ def load_events(path: Path) -> list[dict]:
     return events
 
 
-def collect_history(stock, ticker: str, first_date: str, through: str) -> list[dict]:
+def collect_history_pykrx(stock, ticker: str, first_date: str, through: str) -> list[dict]:
     frame = stock.get_market_ohlcv_by_date(first_date, through, ticker, adjusted=False)
     if frame is None or frame.empty or not {"종가", "저가"}.issubset(frame.columns):
         return []
@@ -110,12 +116,45 @@ def collect_history(stock, ticker: str, first_date: str, through: str) -> list[d
     ]
 
 
+def collect_history_naver(session, ticker: str, first_date: str, through: str,
+                          pause: float = 0.2, max_pages: int = 30) -> list[dict]:
+    """Read descending Naver daily pages until the D0 session is reached."""
+    from collector.stock_collector import _fetch_naver_daily_page, _parse_naver_daily_rows
+
+    start = datetime.strptime(first_date, "%Y%m%d").date()
+    end = datetime.strptime(through, "%Y%m%d").date()
+    by_date = {}
+    reached_start = False
+    for page in range(1, max_pages + 1):
+        html = _fetch_naver_daily_page(session, ticker, page)
+        rows = _parse_naver_daily_rows(html, ticker)
+        if not rows:
+            raise RuntimeError(f"Naver returned no daily rows for {ticker} page={page}")
+        for row in rows:
+            day = row["trade_date"]
+            if start <= day <= end:
+                by_date[day] = {
+                    "date": day.strftime("%Y%m%d"),
+                    "close": int(row["close_price"]), "low": int(row["low_price"]),
+                }
+        if min(row["trade_date"] for row in rows) <= start:
+            reached_start = True
+            break
+        if pause:
+            time.sleep(pause)
+    if not reached_start:
+        raise RuntimeError(f"Naver history did not reach {first_date} for {ticker}")
+    return [by_date[day] for day in sorted(by_date)]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--through", default=datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d"))
     parser.add_argument("--horizon", type=int, default=60)
+    parser.add_argument("--provider", choices=("naver", "pykrx"), default="naver")
+    parser.add_argument("--pause", type=float, default=0.2)
     args = parser.parse_args()
     try:
         datetime.strptime(args.through, "%Y%m%d")
@@ -123,23 +162,41 @@ def main() -> None:
         parser.error("--through must be YYYYMMDD")
     if args.horizon < 4:
         parser.error("--horizon must be at least 4 sessions")
+    if args.pause < 0:
+        parser.error("--pause must be nonnegative")
     if args.through < "20260801":
         parser.error("--through must not precede August 2026")
 
     events = load_events(args.input)
-    from pykrx import stock
-
     by_ticker: dict[str, list[dict]] = defaultdict(list)
     for event in events:
         by_ticker[event["stock_code"]].append(event)
     results = []
-    for i, (ticker, group) in enumerate(sorted(by_ticker.items()), start=1):
-        history = collect_history(stock, ticker, min(row["trade_date"] for row in group), args.through)
-        if not history:
-            raise RuntimeError(f"No price history for {ticker}; refusing incomplete output")
-        for event in group:
-            results.append(evaluate_event(event, history, args.horizon))
-        print(f"[PRICE] {i}/{len(by_ticker)} {ticker}: {len(group)} events", flush=True)
+    if args.provider == "pykrx":
+        from pykrx import stock
+        session = None
+    else:
+        from collector.stock_collector import _build_session
+        stock = None
+        session = _build_session()
+    try:
+        for i, (ticker, group) in enumerate(sorted(by_ticker.items()), start=1):
+            first_date = min(row["trade_date"] for row in group)
+            if args.provider == "naver":
+                history = collect_history_naver(session, ticker, first_date, args.through,
+                                                pause=args.pause)
+            else:
+                history = collect_history_pykrx(stock, ticker, first_date, args.through)
+            if not history:
+                raise RuntimeError(f"No price history for {ticker}; refusing incomplete output")
+            for event in group:
+                results.append(evaluate_event(event, history, args.horizon))
+            print(f"[PRICE] {i}/{len(by_ticker)} {ticker}: {len(group)} events", flush=True)
+            if args.pause:
+                time.sleep(args.pause)
+    finally:
+        if session is not None:
+            session.close()
     results.sort(key=lambda row: (row["signal_date"], row["stock_code"]))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", encoding="utf-8-sig", newline="") as handle:
